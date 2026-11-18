@@ -11,7 +11,7 @@
  * where `create()` returns an object with `parse(value)`.
  */
 import type {
-  ConfigPatch, ConfigView, HistoryView, PoolModelView, QuotaView, RefreshResult, RouterStateView,
+  AccountView, ConfigPatch, ConfigView, HistoryView, PoolModelView, QuotaView, RefreshResult, RouterStateView,
 } from './service.js'
 
 /** Minimal runtime-schema capability carried by a strict codec. */
@@ -154,6 +154,23 @@ function configModel(value: unknown): ConfigView['models'][number] | undefined {
   } as ConfigView['models'][number]
 }
 
+/** Normalize one masked account view (raw keys never cross the wire). */
+function accountView(value: unknown): AccountView | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const entry = value as Record<string, unknown>
+  const id = str(entry.id)
+  if (id.length === 0) return undefined
+  return {
+    id,
+    name: str(entry.name, id),
+    baseURL: str(entry.baseURL),
+    hasKey: bool(entry.hasKey),
+    keyHint: strOrNull(entry.keyHint),
+    apiKeyEnv: strOrNull(entry.apiKeyEnv),
+    active: bool(entry.active),
+  }
+}
+
 /** Normalize the configuration view. */
 function config(value: unknown): ConfigView {
   const entry = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {}
@@ -195,6 +212,8 @@ function config(value: unknown): ConfigView {
       ? entry.excludeModels.filter((item): item is string => typeof item === 'string') : [],
     taskRoutes: routes,
     models: list(entry.models, configModel),
+    accounts: list(entry.accounts, accountView),
+    activeAccountId: str(entry.activeAccountId),
   }
 }
 
@@ -292,6 +311,7 @@ export const CODECS = {
   refresh: codec('RefreshResult', normalizeRefresh),
   patch: codec('ConfigPatch', normalizePatch),
   modelId: codec('ModelId', normalizeModelId),
+  account: codec('AccountInput', (value) => object(value, 'account')),
   string: codec('String', (value) => {
     if (typeof value !== 'string') throw new Error('bailianRouter: expected a string')
     return value

@@ -5,12 +5,27 @@
  */
 import type { TaskType } from './catalog.js'
 import { TASK_TYPES } from './catalog.js'
-import type { ConfigModel } from './config.js'
+import type { ConfigModel, SavedAccount } from './config.js'
 import { invalidateConnectionCache, listConnections } from './connection.js'
 import type { HostContext } from './context.js'
 import { apiKeyConfigured } from './router.js'
 import type { Router } from './router.js'
 import type { RouterStore } from './store.js'
+
+/** One saved account as the panel displays it — the raw key is NEVER returned. */
+export interface AccountView {
+  id: string
+  name: string
+  baseURL: string
+  /** Whether a raw key is stored for this account. */
+  hasKey: boolean
+  /** Masked hint (last 4 chars) for display; null when no raw key is stored. */
+  keyHint: string | null
+  /** Credential reference, when the account uses one instead of a raw key. */
+  apiKeyEnv: string | null
+  /** Whether this is the active account. */
+  active: boolean
+}
 
 /** One pool model as the panel displays it. */
 export interface PoolModelView {
@@ -81,6 +96,10 @@ export interface ConfigView {
   excludeModels: string[]
   taskRoutes: Record<string, string[]>
   models: ConfigModel[]
+  /** Saved accounts, credentials masked (no raw key ever crosses the wire). */
+  accounts: AccountView[]
+  /** Active saved account id; empty = default endpoint / auto-adopt. */
+  activeAccountId: string
 }
 
 /** Complete state snapshot returned by every RPC method. */
@@ -149,6 +168,8 @@ export interface ConfigPatch {
   excludeModels?: string[]
   taskRoutes?: Partial<Record<TaskType, string[]>>
   models?: ConfigModel[]
+  accounts?: SavedAccount[]
+  activeAccountId?: string
 }
 
 /** Sanitize one incoming patch; throws on unusable values. */
@@ -223,6 +244,34 @@ function sanitizePatch(patch: unknown): Record<string, unknown> {
       }
     })
   }
+  if (input.activeAccountId !== undefined) {
+    if (typeof input.activeAccountId !== 'string') throw new Error('activeAccountId must be a string')
+    out.activeAccountId = input.activeAccountId.trim()
+  }
+  if (input.accounts !== undefined) {
+    if (!Array.isArray(input.accounts)) throw new Error('accounts must be an array')
+    const seen = new Set<string>()
+    const cleaned: SavedAccount[] = []
+    for (const entry of input.accounts) {
+      if (typeof entry !== 'object' || entry === null) throw new Error('each account must be an object')
+      const account = entry as Record<string, unknown>
+      const id = typeof account.id === 'string' ? account.id.trim() : ''
+      const name = typeof account.name === 'string' ? account.name.trim() : ''
+      const baseURL = typeof account.baseURL === 'string' ? account.baseURL.trim().replace(/\/+$/, '') : ''
+      if (id.length === 0 || name.length === 0 || baseURL.length === 0) {
+        throw new Error('each account needs a non-empty id, name and baseURL')
+      }
+      if (seen.has(id)) continue
+      let url: URL
+      try { url = new URL(baseURL) } catch (_invalid) { throw new Error(`account ${id}: baseURL must be a valid URL`) }
+      if (!['http:', 'https:'].includes(url.protocol)) throw new Error(`account ${id}: baseURL must be HTTP(S)`)
+      seen.add(id)
+      const apiKey = typeof account.apiKey === 'string' && account.apiKey.trim().length > 0 ? account.apiKey.trim() : undefined
+      const apiKeyEnv = typeof account.apiKeyEnv === 'string' && account.apiKeyEnv.trim().length > 0 ? account.apiKeyEnv.trim() : undefined
+      cleaned.push({ id, name, baseURL, ...(apiKey === undefined ? {} : { apiKey }), ...(apiKeyEnv === undefined ? {} : { apiKeyEnv }) })
+    }
+    out.accounts = cleaned
+  }
   if (Object.keys(out).length === 0) throw new Error('patch carries no editable field')
   return out
 }
@@ -287,6 +336,16 @@ async function stateView(ctx: HostContext, router: Router, store: RouterStore): 
     apiKeyEnv: candidate.apiKeyEnv ?? null,
     current: candidate.baseURL === options.baseURL,
   }))
+  // Masked account views: the raw key never leaves the host process.
+  const accounts: AccountView[] = options.accounts.map(account => ({
+    id: account.id,
+    name: account.name,
+    baseURL: account.baseURL,
+    hasKey: typeof account.apiKey === 'string' && account.apiKey.length > 0,
+    keyHint: typeof account.apiKey === 'string' && account.apiKey.length > 0 ? `••••${account.apiKey.slice(-4)}` : null,
+    apiKeyEnv: account.apiKeyEnv ?? null,
+    active: account.id === options.activeAccountId,
+  }))
   return {
     provider: 'bailian-auto',
     model: 'bailian-auto',
@@ -294,7 +353,7 @@ async function stateView(ctx: HostContext, router: Router, store: RouterStore): 
     config: {
       baseURL: options.baseURL,
       apiKeyEnv: options.apiKeyEnv,
-      apiKeyConfigured: await apiKeyConfigured(ctx, options.apiKeyRefs),
+      apiKeyConfigured: await apiKeyConfigured(ctx, options.apiKeyRefs, options.apiKeyDirect),
       enableDecision: options.enableDecision,
       decisionModel: options.decisionModel,
       decisionModelConfigured: configuredDecision,
@@ -321,6 +380,8 @@ async function stateView(ctx: HostContext, router: Router, store: RouterStore): 
       excludeModels: [...options.excludeModels],
       taskRoutes,
       models: options.models.map(model => ({ ...model })),
+      accounts,
+      activeAccountId: options.activeAccountId,
     },
     pool: {
       models: snapshot.entries.map(entry => ({
@@ -366,6 +427,12 @@ export interface BailianRouterService {
   updateConfig(patch: ConfigPatch): Promise<RouterStateView>
   /** Point the router at another Aliyun connection found in this profile. */
   switchConnection(entryId: string, providerId: string): Promise<RefreshResult>
+  /** Add or update one saved Bailian account (raw key persisted as a secret). */
+  upsertAccount(account: SavedAccount): Promise<RouterStateView>
+  /** Delete one saved account; clears the active selection when it was active. */
+  removeAccount(id: string): Promise<RouterStateView>
+  /** Activate a saved account (or '' for the default endpoint / auto-adopt). */
+  activateAccount(id: string): Promise<RefreshResult>
   refreshPool(): Promise<RefreshResult>
   resetQuota(model?: string): Promise<RouterStateView>
   clearHistory(): Promise<RouterStateView>
@@ -373,14 +440,17 @@ export interface BailianRouterService {
 
 /** Create the RPC service over the router and store. */
 export function createService(ctx: HostContext, router: Router, store: RouterStore): BailianRouterService {
-  const editConfig = async (patch: ConfigPatch): Promise<RouterStateView> => {
-    const sanitized = sanitizePatch(patch)
+  const persist = async (mutate: (current: Record<string, unknown>) => Record<string, unknown>): Promise<void> => {
     const editor = ctx.get('configEditor')
     const entry = ctx.fiber.entry
     if (editor === undefined || entry === undefined) {
       throw new Error('当前部署不支持在线保存配置(configEditor 不可用);请直接编辑 profile 的 cordis.patch.yml 中本插件的 config')
     }
-    await editor.edit(entry, (current) => {
+    await editor.edit(entry, mutate)
+  }
+  const editConfig = async (patch: ConfigPatch): Promise<RouterStateView> => {
+    const sanitized = sanitizePatch(patch)
+    await persist((current) => {
       const next: Record<string, unknown> = { ...current, ...sanitized }
       // Merge taskRoutes partially so one task edit keeps the others.
       if (sanitized.taskRoutes !== undefined) {
@@ -392,6 +462,10 @@ export function createService(ctx: HostContext, router: Router, store: RouterSto
     })
     return stateView(ctx, router, store)
   }
+  const readAccounts = (current: Record<string, unknown>): SavedAccount[] =>
+    Array.isArray(current.accounts)
+      ? (current.accounts as SavedAccount[]).filter(account => account && typeof account.id === 'string')
+      : []
   return {
     async getState() {
       return stateView(ctx, router, store)
@@ -409,7 +483,53 @@ export function createService(ctx: HostContext, router: Router, store: RouterSto
       await editConfig({
         baseURL: target.baseURL,
         ...(target.apiKeyEnv === undefined ? {} : { apiKeyEnv: target.apiKeyEnv }),
+        // A profile connection supersedes any saved-account selection.
+        activeAccountId: '',
       })
+      invalidateConnectionCache()
+      const result = await router.syncPool(true)
+      return { ok: result.ok, message: result.message, state: await stateView(ctx, router, store) }
+    },
+    async upsertAccount(account: SavedAccount) {
+      const sanitized = sanitizePatch({ accounts: [account] })
+      const incoming = (sanitized.accounts as SavedAccount[])[0]
+      if (incoming === undefined) throw new Error('账号无效:需要 id、名称与接口地址')
+      await persist((current) => {
+        const existing = readAccounts(current)
+        const previous = existing.find(item => item.id === incoming.id)
+        const merged: SavedAccount = { ...incoming }
+        // Editing without re-entering a credential keeps the stored secret;
+        // supplying a credential reference switches the account to ref mode.
+        if (merged.apiKey === undefined && merged.apiKeyEnv === undefined && previous?.apiKey !== undefined) {
+          merged.apiKey = previous.apiKey
+        }
+        return { ...current, accounts: [...existing.filter(item => item.id !== incoming.id), merged] }
+      })
+      return stateView(ctx, router, store)
+    },
+    async removeAccount(id: string) {
+      if (typeof id !== 'string' || id.trim().length === 0) throw new Error('account id must be a non-empty string')
+      const target = id.trim()
+      const wasActive = router.settings().activeAccountId === target
+      await persist((current) => {
+        const accounts = readAccounts(current).filter(item => item.id !== target)
+        return {
+          ...current,
+          accounts,
+          ...(current.activeAccountId === target ? { activeAccountId: '' } : {}),
+        }
+      })
+      invalidateConnectionCache()
+      if (wasActive) await router.syncPool(true)
+      return stateView(ctx, router, store)
+    },
+    async activateAccount(id: string) {
+      const target = typeof id === 'string' ? id.trim() : ''
+      const accounts = router.settings().accounts
+      if (target !== '' && !accounts.some(account => account.id === target)) {
+        throw new Error(`未找到账号 ${target}(可能已被删除)`)
+      }
+      await persist((current) => ({ ...current, activeAccountId: target }))
       invalidateConnectionCache()
       const result = await router.syncPool(true)
       return { ok: result.ok, message: result.message, state: await stateView(ctx, router, store) }

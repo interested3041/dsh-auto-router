@@ -3,6 +3,29 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.0] - 2026-11-18
+
+### 新增
+
+- **选 API 账号(多账号管理)**:面板顶部新增「当前 API 账号」下拉,可在默认接口/自动沿用、
+  已保存账号、profile 已有连接之间一键切换;切换后自动重新同步模型池并重置冷却。
+- **插件内添加/保存/删除百炼账号**:每个账号 = 名称 + 接口地址 + 凭据。凭据二选一:
+  直接填 API Key(以 `secret` 角色存于本机 profile 配置),或只填凭据引用(环境变量名,走 DSH 凭据服务/环境)。
+  新增 RPC `upsertAccount` / `removeAccount` / `activateAccount`;编辑账号时留空 Key 即保留原 Key。
+- 配置项 `accounts`(已保存账号列表)与 `activeAccountId`(当前账号,空=默认/自动沿用)。
+
+### 安全
+
+- **API Key 全程打码**:面板状态视图只返回 `hasKey` 与末四位提示(`••••xxxx`),明文 Key 绝不跨 RPC、
+  绝不写入 `state.json` 或日志;明文仅存于本机 profile 配置的 secret 字段。
+- 切换账号的作用域含账号标识(`baseURL|acct:<id>`),不同账号的模型池/冷却/会话绑定互不串用。
+
+### 变更
+
+- **README 重写**:去掉架构图与 provider/上层路由术语,改大白话;显式写明适配范围(当前百炼,
+  目标任何"一个 key 多模型"的 OpenAI 兼容平台)与路线图(分类展开面板/每模型额度上限/一键完整性自检/多厂商/dshgo)。
+- 测试增至 **256 条断言**(新增 `test/accounts.test.mjs` 30 条:配置解析/直连 Key/作用域/打码视图/增删改与启用)。
+
 ## [0.2.0] - 2026-11-18
 
 ### 新增

@@ -53,9 +53,9 @@ const parsed = decision.parseDecision('```json\n{"selected_model":"qwen-plus","r
 assert(parsed?.selectedModel === 'qwen-plus', 'parseDecision extracts from fenced JSON')
 assert(decision.parseDecision('no json here') === undefined, 'parseDecision rejects non-JSON')
 
-// 4. Typert host manifest has the five RPC methods.
+// 4. Typert host manifest has the full RPC surface (incl. account management).
 const methods = host.TYPERT.invocations.map(inv => inv.method).sort()
-assert(JSON.stringify(methods) === JSON.stringify(['clearHistory', 'getState', 'refreshPool', 'resetQuota', 'switchConnection', 'updateConfig']), 'TYPERT methods are complete')
+assert(JSON.stringify(methods) === JSON.stringify(['activateAccount', 'clearHistory', 'getState', 'refreshPool', 'removeAccount', 'resetQuota', 'switchConnection', 'updateConfig', 'upsertAccount']), 'TYPERT methods are complete')
 
 // Report.
 let failed = 0

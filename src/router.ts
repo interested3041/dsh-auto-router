@@ -47,9 +47,10 @@ export interface PoolEntryView {
   tasks: readonly string[]
 }
 
-/** Identity of one connection: endpoint plus the credential reference in use. */
+/** Identity of one connection: endpoint plus the credential in use. */
 export function scopeOf(options: RouterOptions): string {
-  return `${options.baseURL}|${options.apiKeyEnv}`
+  const credential = options.activeAccountId ? `acct:${options.activeAccountId}` : options.apiKeyEnv
+  return `${options.baseURL}|${credential}`
 }
 
 /** Settings + pool snapshot captured for one request generation. */
@@ -75,14 +76,23 @@ function isSwitchable(code: string): boolean {
 }
 
 /**
- * Resolve the Bailian API key: the configured reference first, then the other
- * well-known Aliyun references, each through the credentials seam and then the
- * process environment.
+ * Resolve the Bailian API key: a direct key from the active saved account
+ * first, then the configured reference and the other well-known Aliyun
+ * references, each through the credentials seam and then the process environment.
  * @param ctx - host context (optional credentials service).
  * @param refs - credential references to try, in order.
- * @returns the key and the reference that supplied it.
+ * @param directKey - raw key stored by the active saved account, when present.
+ * @returns the key and the reference (or `account`) that supplied it.
  */
-export async function resolveApiKey(ctx: HostContext, refs: readonly string[]): Promise<{ key: string; ref: string }> {
+export async function resolveApiKey(ctx: HostContext, refs: readonly string[], directKey?: string): Promise<{ key: string; ref: string }> {
+  if (directKey !== undefined && directKey.trim().length > 0) {
+    const value = directKey.trim()
+    // eslint-disable-next-line no-control-regex
+    if (/[\u0000-\u001f\u007f]/.test(value)) {
+      throw new LlmError(`${PROVIDER}: the API key stored for the active account contains characters no HTTP header can carry`, 'INVALID_CREDENTIAL')
+    }
+    return { key: value, ref: 'account' }
+  }
   const credentials: CredentialsLike | undefined = ctx.get('credentials')
   for (const ref of refs) {
     let value: string | undefined
@@ -108,9 +118,9 @@ export async function resolveApiKey(ctx: HostContext, refs: readonly string[]): 
 }
 
 /** Whether any configured key reference currently resolves (for panel display). */
-export async function apiKeyConfigured(ctx: HostContext, refs: readonly string[]): Promise<boolean> {
+export async function apiKeyConfigured(ctx: HostContext, refs: readonly string[], directKey?: string): Promise<boolean> {
   try {
-    return (await resolveApiKey(ctx, refs)).key.length > 0
+    return (await resolveApiKey(ctx, refs, directKey)).key.length > 0
   } catch (_missing) {
     return false
   }
@@ -135,6 +145,11 @@ export class Router {
     return { decisionModel: options.decisionModel, fallbackModel: options.fallbackModel }
   }
 
+  /** Resolved settings snapshot (host-internal; never sent to the panel raw). */
+  settings(): RouterOptions {
+    return resolveOptions(this.config)
+  }
+
   /** Capture the current settings generation and pool view. */
   capture(): RouterSnapshot {
     const options = resolveOptions(this.config)
@@ -142,7 +157,20 @@ export class Router {
     // the `bailian` provider in llm-pi-ai) while our own endpoint is untouched.
     let effective = options
     let adopted: DiscoveredConnection | undefined
-    if (options.adoptProfileProvider && options.baseURL === DEFAULT_BASE_URL) {
+    const activeAccount = options.activeAccountId === ''
+      ? undefined
+      : options.accounts.find(account => account.id === options.activeAccountId)
+    if (activeAccount !== undefined) {
+      // An explicitly selected saved account wins over profile auto-adoption.
+      const ref = activeAccount.apiKeyEnv ?? options.apiKeyEnv
+      effective = {
+        ...options,
+        baseURL: activeAccount.baseURL,
+        apiKeyEnv: ref,
+        apiKeyRefs: [...new Set([ref, ...options.apiKeyRefs])],
+        ...(activeAccount.apiKey === undefined ? {} : { apiKeyDirect: activeAccount.apiKey }),
+      }
+    } else if (options.adoptProfileProvider && options.baseURL === DEFAULT_BASE_URL) {
       const discovered = discoverConnection(this.ctx)
       if (discovered !== undefined) {
         adopted = discovered
@@ -218,7 +246,7 @@ export class Router {
     const snapshot = this.capture()
     let apiKey: string
     try {
-      apiKey = (await resolveApiKey(this.ctx, snapshot.options.apiKeyRefs)).key
+      apiKey = (await resolveApiKey(this.ctx, snapshot.options.apiKeyRefs, snapshot.options.apiKeyDirect)).key
     } catch (error) {
       const message = manual ? String((error as Error)?.message ?? error) : 'API key not configured; pool sync skipped'
       if (manual) this.store.setSyncError(message)
@@ -256,7 +284,7 @@ export class Router {
       yield* this.runSingle(options, snapshot, options.model)
       return
     }
-    const apiKey = (await resolveApiKey(this.ctx, snapshot.options.apiKeyRefs)).key
+    const apiKey = (await resolveApiKey(this.ctx, snapshot.options.apiKeyRefs, snapshot.options.apiKeyDirect)).key
     const client = new BailianClient({
       baseURL: snapshot.options.baseURL, apiKey, streamIdleTimeoutMs: snapshot.options.streamIdleTimeoutMs,
     })
@@ -411,7 +439,7 @@ export class Router {
 
   /** One execution attempt with no fallback (pass-through mode). */
   private async *runSingle(options: GenerateOptions, snapshot: RouterSnapshot, model: string): AsyncGenerator<StreamChunk> {
-    const apiKey = (await resolveApiKey(this.ctx, snapshot.options.apiKeyRefs)).key
+    const apiKey = (await resolveApiKey(this.ctx, snapshot.options.apiKeyRefs, snapshot.options.apiKeyDirect)).key
     const client = new BailianClient({
       baseURL: snapshot.options.baseURL, apiKey, streamIdleTimeoutMs: snapshot.options.streamIdleTimeoutMs,
     })
@@ -510,7 +538,7 @@ export class Router {
   /** Run one media generation and return the reply text. */
   private async mediaReply(media: RouteDecision['media'], snapshot: RouterSnapshot): Promise<string> {
     const request = media as { kind: 'image'; model: string; prompt: string }
-    const apiKey = (await resolveApiKey(this.ctx, snapshot.options.apiKeyRefs)).key
+    const apiKey = (await resolveApiKey(this.ctx, snapshot.options.apiKeyRefs, snapshot.options.apiKeyDirect)).key
     const client = new BailianClient({
       baseURL: snapshot.options.baseURL, apiKey,
       streamIdleTimeoutMs: snapshot.options.streamIdleTimeoutMs,

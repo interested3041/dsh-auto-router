@@ -23,6 +23,9 @@
     resetQuota(model?: string): Promise<any>
     clearHistory(): Promise<any>
     switchConnection(entryId: string, providerId: string): Promise<any>
+    upsertAccount(account: Record<string, unknown>): Promise<any>
+    removeAccount(id: string): Promise<any>
+    activateAccount(id: string): Promise<any>
   }
 
   const g = globalThis as any
@@ -92,6 +95,21 @@
               { name: 'entryId', wire: 'entryId', source: 'json', codec: codec('String', anyValue) },
               { name: 'providerId', wire: 'providerId', source: 'json', codec: codec('String', anyValue) },
             ],
+            result: codec('RefreshResult', asObject),
+          },
+          {
+            method: 'upsertAccount',
+            parameters: [{ name: 'account', wire: 'account', source: 'json', codec: codec('AccountInput', asObject) }],
+            result: codec('RouterState', asObject),
+          },
+          {
+            method: 'removeAccount',
+            parameters: [{ name: 'id', wire: 'id', source: 'json', codec: codec('String', anyValue) }],
+            result: codec('RouterState', asObject),
+          },
+          {
+            method: 'activateAccount',
+            parameters: [{ name: 'id', wire: 'id', source: 'json', codec: codec('String', anyValue) }],
             result: codec('RefreshResult', asObject),
           },
         ],
@@ -172,6 +190,7 @@
         const [busy, setBusy] = useState(false)
         const [error, setError] = useState<string | null>(null)
         const [notice, setNotice] = useState<string | null>(null)
+        const [acctForm, setAcctForm] = useState<any>({ id: '', name: '', baseURL: '', apiKey: '', apiKeyEnv: '' })
         const alive = useRef(true)
         useEffect(() => () => { alive.current = false }, [])
 
@@ -302,6 +321,40 @@
           general: T('通用', 'General'),
         }
 
+        // ---- API account selection & management --------------------------------
+        const accounts: any[] = cfg.accounts ?? []
+        const activeAccountId: string = cfg.activeAccountId ?? ''
+        const accountSelectValue = activeAccountId !== ''
+          ? `acct:${activeAccountId}`
+          : state.adopted ? `conn:${state.adopted.entryId}|${state.adopted.providerId}` : ''
+        const onAccountSelect = (value: string) => {
+          if (value.startsWith('acct:')) {
+            void mutate(() => remote.activateAccount(value.slice(5)), T('已切换账号并重新同步模型池', 'Account switched and pool resynced'))
+          } else if (value.startsWith('conn:')) {
+            const sep = value.indexOf('|')
+            const entryId = value.slice(5, sep)
+            const providerId = value.slice(sep + 1)
+            void mutate(() => remote.switchConnection(entryId, providerId), T('已切换连接并重新同步模型池', 'Connection switched and pool resynced'))
+          } else {
+            void mutate(() => remote.activateAccount(''), T('已回到默认接口/自动沿用', 'Back to default endpoint / auto-adopt'))
+          }
+        }
+        const resetAcctForm = () => setAcctForm({ id: '', name: '', baseURL: '', apiKey: '', apiKeyEnv: '' })
+        const saveAccount = () => {
+          const name = String(acctForm.name ?? '').trim()
+          const baseURL = String(acctForm.baseURL ?? '').trim()
+          const apiKey = String(acctForm.apiKey ?? '').trim()
+          const apiKeyEnv = String(acctForm.apiKeyEnv ?? '').trim()
+          if (!name || !baseURL) { setError(T('账号名称与接口地址不能为空', 'Account name and endpoint are required')); return }
+          if (!apiKey && !apiKeyEnv && !acctForm.id) { setError(T('请填写 API Key 或凭据引用', 'Provide an API key or a credential reference')); return }
+          const id = acctForm.id || ('a' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6))
+          const account: Record<string, unknown> = { id, name, baseURL }
+          if (apiKey) account.apiKey = apiKey
+          if (apiKeyEnv) account.apiKeyEnv = apiKeyEnv
+          void mutate(() => remote.upsertAccount(account), T('账号已保存', 'Account saved'))
+          resetAcctForm()
+        }
+
         return h('div', { className: 'bar-root' },
           h('style', null, CSS),
 
@@ -312,6 +365,23 @@
               h(Badge, { tone: cfg.apiKeyConfigured ? 'ok' : 'err', text: cfg.apiKeyConfigured ? T('API Key 已配置', 'API key set') : T('API Key 未配置', 'API key missing') }),
               h(Badge, { tone: cfg.enableDecision ? 'ok' : 'warn', text: cfg.enableDecision ? T('决策模型开启', 'decision on') : T('决策模型关闭(启发式)', 'decision off (heuristic)') }),
               h('span', { className: 'bar-muted bar-mono' }, `${state.provider}/${state.model}`),
+            ),
+            h('div', { className: 'bar-row' },
+              h('label', { className: 'bar-muted' }, T('当前 API 账号', 'Active API account')),
+              h('select', {
+                className: 'bar-input',
+                style: { maxWidth: '460px' },
+                value: accountSelectValue,
+                onChange: (e: any) => onAccountSelect(e.target.value),
+              },
+                h('option', { value: '' }, T('默认接口 / 自动沿用', 'Default endpoint / auto-adopt')),
+                ...accounts.map((a: any) => h('option', { key: a.id, value: `acct:${a.id}` }, a.name)),
+                ...(state.candidates ?? []).map((c: any) => h('option', {
+                  key: `${c.entryId}|${c.providerId}`,
+                  value: `conn:${c.entryId}|${c.providerId}`,
+                }, T('profile 连接: ', 'Profile: ') + `${c.entryId} → ${c.providerId}`)),
+              ),
+              h('span', { className: 'bar-muted', style: { fontSize: '11px' } }, T('切换后自动重新同步模型池并重置冷却', 'Switching resyncs the pool and resets cooldowns')),
             ),
             h('div', { className: 'bar-row bar-muted' },
               h('span', null, T('接口: ', 'Endpoint: '), h('span', { className: 'bar-mono' }, cfg.baseURL)),
@@ -343,6 +413,50 @@
             state.pool?.lastSyncError ? h('div', { className: 'bar-error' }, T('同步失败: ', 'Sync failed: '), state.pool.lastSyncError) : null,
             notice ? h('div', { className: 'bar-ok' }, notice) : null,
             error ? h('div', { className: 'bar-error' }, error) : null,
+          ),
+
+          // ---- API account management ----
+          h('div', { className: 'bar-card' },
+            h('h4', null, T('API 账号管理(添加 / 切换多个百炼账号)', 'API accounts (add / switch Bailian accounts)')),
+            h('div', { className: 'bar-muted', style: { fontSize: '11px' } }, T(
+              'Key 以 secret 形式存于本机配置,面板打码显示,绝不写入 state.json 或日志;也可只填凭据引用(环境变量名)。',
+              'Keys are stored as secrets in local config, masked here, never in state.json or logs; a credential ref (env name) also works.',
+            )),
+            accounts.length === 0
+              ? h('div', { className: 'bar-muted' }, T('还没有保存的账号。在下方添加,或继续使用默认接口/自动沿用。', 'No saved accounts yet. Add one below, or keep the default endpoint / auto-adopt.'))
+              : h('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } },
+                ...accounts.map((a: any) => h('div', { key: a.id, className: 'bar-history-item' },
+                  h('div', { className: 'bar-row' },
+                    h('strong', null, a.name),
+                    a.active ? h(Badge, { tone: 'ok', text: T('使用中', 'active') }) : null,
+                    h('span', { className: 'bar-muted bar-mono', style: { fontSize: '11px', wordBreak: 'break-all' } }, a.baseURL),
+                  ),
+                  h('div', { className: 'bar-row bar-muted', style: { fontSize: '11px' } },
+                    h('span', null, a.hasKey
+                      ? T('Key: ', 'Key: ') + (a.keyHint ?? '••••')
+                      : T('凭据引用: ', 'Credential ref: ') + (a.apiKeyEnv ?? '—')),
+                    h('div', { className: 'bar-btn', role: 'button', onClick: () => setAcctForm({ id: a.id, name: a.name, baseURL: a.baseURL, apiKey: '', apiKeyEnv: a.apiKeyEnv ?? '' }) }, T('编辑', 'Edit')),
+                    a.active ? null : h('div', { className: 'bar-btn', role: 'button', onClick: () => void mutate(() => remote.activateAccount(a.id), T('已切换账号并重新同步模型池', 'Account switched and pool resynced')) }, T('启用', 'Use')),
+                    h('div', { className: 'bar-btn', role: 'button', onClick: () => void mutate(() => remote.removeAccount(a.id), T('账号已删除', 'Account removed')) }, T('删除', 'Delete')),
+                  ),
+                ))),
+            h('div', { className: 'bar-row' },
+              field(T('账号名称', 'Account name'), acctForm.name, (v: string) => setAcctForm({ ...acctForm, name: v })),
+              field(T('接口地址 baseURL', 'Endpoint baseURL'), acctForm.baseURL, (v: string) => setAcctForm({ ...acctForm, baseURL: v })),
+            ),
+            h('div', { className: 'bar-row' },
+              h('div', { className: 'bar-field' },
+                h('label', null, T('API Key(编辑时留空=保留原 Key)', 'API key (blank when editing = keep stored key)')),
+                h('input', {
+                  className: 'bar-input bar-mono', type: 'password', value: acctForm.apiKey, placeholder: 'sk-…',
+                  onChange: (e: any) => setAcctForm({ ...acctForm, apiKey: e.target.value }),
+                })),
+              field(T('或凭据引用(环境变量名,可选)', 'Or credential ref (env name, optional)'), acctForm.apiKeyEnv, (v: string) => setAcctForm({ ...acctForm, apiKeyEnv: v })),
+            ),
+            h('div', { className: 'bar-row' },
+              h('div', { className: 'bar-btn bar-btn-primary', role: 'button', onClick: saveAccount }, acctForm.id ? T('保存修改', 'Save changes') : T('添加账号', 'Add account')),
+              acctForm.id ? h('div', { className: 'bar-btn', role: 'button', onClick: resetAcctForm }, T('取消编辑', 'Cancel edit')) : null,
+            ),
           ),
 
           // ---- routing configuration ----

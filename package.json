@@ -1,6 +1,6 @@
 {
   "name": "dsh-bailian-auto-router",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "DeepSeek Harness 百炼智能路由插件:注册虚拟模型 bailian-auto,在每次请求前由决策模型分析输入的模态与任务类型,自动路由到最合适的阿里云百炼执行模型;内置额度感知、冷却回退与失败静默切换。Decision-model router for Aliyun Bailian (DashScope): registers the virtual model bailian-auto, analyzes each request with a decision model, routes to the best execution model with quota-aware cooldown and silent fallback.",
   "type": "module",
   "main": "lib/index.js",
@@ -48,7 +48,7 @@
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.client.json && node scripts/postbuild.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit",
     "smoke": "node test/smoke.mjs",
-    "test": "node test/smoke.mjs && node test/classify.test.mjs && node test/router.test.mjs && node test/account.test.mjs && node test/behavior.test.mjs",
+    "test": "node test/smoke.mjs && node test/classify.test.mjs && node test/router.test.mjs && node test/account.test.mjs && node test/accounts.test.mjs && node test/behavior.test.mjs",
     "test:live": "node test/live.mjs",
     "prepublishOnly": "npm run build && npm test"
   },
