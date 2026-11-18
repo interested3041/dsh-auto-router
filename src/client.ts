@@ -15,16 +15,16 @@
  * This file must stay a non-module (no top-level import/export) so tsc emits a
  * plain script the module loader can evaluate.
  */
-interface BarRemoteApi {
-  getState(): Promise<any>
-  updateConfig(patch: Record<string, unknown>): Promise<any>
-  refreshPool(): Promise<any>
-  resetQuota(model?: string): Promise<any>
-  clearHistory(): Promise<any>
-  switchConnection(entryId: string, providerId: string): Promise<any>
-}
-
 {
+  type BarRemoteApi = {
+    getState(): Promise<any>
+    updateConfig(patch: Record<string, unknown>): Promise<any>
+    refreshPool(): Promise<any>
+    resetQuota(model?: string): Promise<any>
+    clearHistory(): Promise<any>
+    switchConnection(entryId: string, providerId: string): Promise<any>
+  }
+
   const g = globalThis as any
   const PACKAGE = 'dsh-bailian-auto-router'
   const NS = 'bailianRouter'
@@ -131,6 +131,17 @@ interface BarRemoteApi {
 
       // ---- small helpers -------------------------------------------------------
       const fmtTime = (ms: number | null): string => (ms ? new Date(ms).toLocaleString() : '—')
+      /** Panel label for a routing record's source; 'notice' means no model ran. */
+      const decisionSourceLabel = (source: string | null | undefined): string => {
+        switch (source) {
+          case 'model': return T('决策模型', 'decision model')
+          case 'heuristic': return T('规则', 'heuristic')
+          case 'fallback': return T('回退', 'fallback')
+          case 'media': return T('媒体', 'media')
+          case 'notice': return T('未调用模型(能力闸门)', 'no model call (capability gate)')
+          default: return source ?? '—'
+        }
+      }
       const fmtDuration = (ms: number): string => {
         if (ms <= 0) return '—'
         const total = Math.ceil(ms / 1000)
@@ -385,7 +396,7 @@ interface BarRemoteApi {
           // ---- pool & quota ----
           h('div', { className: 'bar-card' },
             h('div', { className: 'bar-row' },
-              h('h4', null, T('模型池与本轮剩余额度状态(本地)', 'Pool & local quota state')),
+              h('h4', null, T('模型池与本地冷却状态（启发式，非真实配额）', 'Pool & local cooldown state (heuristic, not real quota)')),
               h('div', {
                 className: 'bar-btn', role: 'button',
                 onClick: () => void mutate(() => remote.refreshPool(), T('已从百炼拉取模型列表', 'Model list refreshed from Bailian')),
@@ -401,7 +412,7 @@ interface BarRemoteApi {
                   h('th', null, T('模型', 'Model')),
                   h('th', null, T('来源', 'Source')),
                   h('th', null, T('视觉', 'Vision')),
-                  h('th', null, T('额度状态', 'Quota')),
+                  h('th', null, T('冷却状态(启发式)', 'Cooldown (heuristic)')),
                   h('th', null, T('连败', 'Fails')),
                   h('th', null, T('调用', 'Calls')),
                   h('th', null, T('最近错误', 'Last error')),
@@ -577,7 +588,7 @@ interface BarRemoteApi {
                   h('div', { className: 'bar-row' },
                     h(Badge, { tone: r.ok ? 'ok' : 'err', text: r.ok ? T('成功', 'ok') : T('失败', 'failed') }),
                     h('span', { className: 'bar-mono' }, r.finalModel ?? '—'),
-                    h('span', { className: 'bar-muted' }, `${fmtTime(r.at)} · ${r.task} · ${r.modality} · ${r.decisionSource}`
+                    h('span', { className: 'bar-muted' }, `${fmtTime(r.at)} · ${r.task} · ${r.modality} · ${decisionSourceLabel(r.decisionSource)}`
                       + (r.decisionTokens ? ` · 决策 ${r.decisionTokens} tok` : '')),
                   ),
                   r.reasoning ? h('div', { className: 'bar-muted' }, r.reasoning) : null,

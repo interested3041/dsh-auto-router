@@ -264,6 +264,23 @@ export class Router {
       options, snapshot.options, snapshot.pool, this.store, client, options.signal,
     )
 
+    // Deterministic short-circuit (e.g. video intent with no video model): reply
+    // without calling any model, so the turn costs zero tokens.
+    if (decision.notice !== undefined) {
+      const record: RouteRecord = {
+        at: Date.now(),
+        task: decision.task,
+        modality: hasImageContent(options) ? 'image' : 'text',
+        decisionSource: 'notice',
+        reasoning: decision.reasoning,
+        attempts: [],
+        ok: true,
+      }
+      yield* this.streamText(decision.notice.text, options.signal)
+      this.store.recordRoute(record)
+      return
+    }
+
     // Media intent (image generation): the account's image models are served by
     // /images/generations, so this never goes through chat completions.
     if (decision.media !== undefined) {
@@ -313,6 +330,22 @@ export class Router {
     const effort = callerEffort !== undefined && callerEffort !== 'auto' ? callerEffort : decision.effort
     const attempts = decision.candidates.slice(0, snapshot.options.maxAttempts)
     if (attempts.length === 0) attempts.push(snapshot.options.fallbackModel)
+    // Session stickiness: one conversation keeps one model, so the provider's
+    // prompt cache and tool-call formatting stay stable across turns. Every
+    // `sessionTurnLimit` turns the session may be re-selected, keeping the
+    // token balance fair for long agent loops.
+    const sessionId = options.sessionId
+    if (sessionId !== undefined && snapshot.options.stickySession) {
+      const binding = this.store.sessionModel(sessionId)
+      if (binding !== undefined
+        && binding.turns % snapshot.options.sessionTurnLimit !== 0
+        && attempts.includes(binding.model)
+        && !this.store.inCooldown(binding.model)
+        && !this.contextOverloaded(binding.model, options, snapshot)) {
+        attempts.splice(attempts.indexOf(binding.model), 1)
+        attempts.unshift(binding.model)
+      }
+    }
     let lastError: unknown
     for (const model of attempts) {
       let emitted = false
@@ -329,6 +362,7 @@ export class Router {
         }
         // Attempt completed (terminal finish already yielded).
         this.store.markSuccess(model)
+        if (sessionId !== undefined && snapshot.options.stickySession) this.store.bindSession(sessionId, model)
         // Record under both buckets: ranking/balancing runs on the heuristic
         // task, while history and the panel show the decided task.
         this.store.recordUsage(decision.heuristicTask, model, tokens)
@@ -362,6 +396,7 @@ export class Router {
           ? snapshot.options.quotaCooldownMs
           : snapshot.options.rateLimitCooldownMs
         this.store.markFailure(model, code, cooldownMs)
+        if (sessionId !== undefined) this.store.dropSession(sessionId)
         lastError = failure
         this.ctx.logger.warn(
           `[bailian-auto-router] ${model} failed (${code}), cooldown ${Math.round(cooldownMs / 1000)}s; trying next candidate`,
@@ -427,6 +462,24 @@ export class Router {
       }
       throw error
     }
+  }
+
+  /**
+   * Whether the current message volume is approaching the bound model's
+   * context window. When it is, the sticky binding is dropped so the long
+   * session can re-select a roomier model instead of pinning a small-context one.
+   */
+  private contextOverloaded(model: string, options: GenerateOptions, snapshot: RouterSnapshot): boolean {
+    const window = snapshot.pool.byId.get(model)?.contextWindow
+    if (window === undefined || window <= 0) return false
+    let chars = 0
+    for (const message of options.messages ?? []) {
+      for (const block of message.content ?? []) {
+        if (block.type === 'text') chars += String(block.text ?? '').length
+      }
+    }
+    // Rough budget: 4 characters per token, keep 20% headroom.
+    return chars > window * 0.8 * 4
   }
 
   /** Effective image-input capability: explicit config, then learned, then inferred. */

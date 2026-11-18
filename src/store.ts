@@ -40,7 +40,7 @@ export interface RouteRecord {
   task: string
   modality: 'text' | 'image'
   /** 'model' = decision model chose; 'heuristic' = rules chose; 'fallback' = decision failed. */
-  decisionSource: 'model' | 'heuristic' | 'fallback' | 'media'
+  decisionSource: 'model' | 'heuristic' | 'fallback' | 'media' | 'notice'
   decisionModel?: string
   reasoning?: string
   /** Models tried in order. */
@@ -61,6 +61,19 @@ export interface UsageEntry {
   lastAt: number
 }
 
+/**
+ * One session's sticky model choice. Agent sessions fan out dozens of turns;
+ * rotating the model inside one session would destroy the provider's prompt
+ * cache and can change tool-call formatting mid-conversation.
+ */
+export interface SessionBinding {
+  model: string
+  /** Epoch ms of the last turn served by this session. */
+  at: number
+  /** Turns served in this session (periodic reselection keeps balance fair). */
+  turns: number
+}
+
 /** Complete persisted state. */
 export interface RouterState {
   version: 1
@@ -79,10 +92,24 @@ export interface RouterState {
   visionOk: Record<string, number>
   /** Models that rejected a reasoning-effort parameter (epoch ms). */
   effortUnsupported: Record<string, number>
+  /** Session id -> sticky model, so one conversation keeps one model. */
+  sessions: Record<string, SessionBinding>
 }
 
 const STATE_VERSION = 1 as const
 const MAX_HISTORY = 50
+/** Session stickiness expires so a reused id cannot pin an obsolete model. */
+const SESSION_TTL_MS = 24 * 60 * 60 * 1000
+const MAX_SESSIONS = 200
+
+/** Strip credential-shaped substrings before anything is persisted. */
+export function redactSecrets(text: string): string {
+  return text
+    .replace(/sk-[A-Za-z0-9_-]{6,}/g, '[redacted]')
+    .replace(/ghp_[A-Za-z0-9]{10,}/g, '[redacted]')
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, 'Bearer [redacted]')
+    .replace(/(?:api[_-]?key|apikey|access[_-]?token|secret)\s*[:=]\s*[^\s"',;]{6,}/gi, '[redacted]')
+}
 
 function freshState(): RouterState {
   return {
@@ -94,6 +121,7 @@ function freshState(): RouterState {
     visionVeto: {},
     visionOk: {},
     effortUnsupported: {},
+    sessions: {},
   }
 }
 
@@ -107,7 +135,7 @@ function sanitize(raw: unknown): RouterState {
   }
   if (typeof data.scope === 'string') state.scope = data.scope
   if (typeof data.lastSyncAt === 'number') state.lastSyncAt = data.lastSyncAt
-  if (typeof data.lastSyncError === 'string') state.lastSyncError = data.lastSyncError
+  if (typeof data.lastSyncError === 'string') state.lastSyncError = redactSecrets(data.lastSyncError)
   if (typeof data.quota === 'object' && data.quota !== null) {
     for (const [id, entry] of Object.entries(data.quota)) {
       if (typeof entry !== 'object' || entry === null) continue
@@ -144,8 +172,29 @@ function sanitize(raw: unknown): RouterState {
     }
   }
   if (Array.isArray(data.history)) {
-    state.history = data.history.filter((entry): entry is RouteRecord =>
-      typeof entry?.at === 'number' && Array.isArray(entry.attempts)).slice(-MAX_HISTORY)
+    state.history = data.history
+      .filter((entry): entry is RouteRecord => typeof entry?.at === 'number' && Array.isArray(entry.attempts))
+      .slice(-MAX_HISTORY)
+      .map((entry) => ({
+        ...entry,
+        // Whitelist: only the model, the outcome and the failure class are
+        // persisted - never a provider error message or a request body.
+        attempts: entry.attempts.map((attempt) => ({
+          model: String(attempt?.model ?? ''),
+          ok: attempt?.ok === true,
+          ...(typeof attempt?.code === 'string' ? { code: attempt.code } : {}),
+        })),
+      }))
+  }
+  if (typeof data.sessions === 'object' && data.sessions !== null) {
+    for (const [id, entry] of Object.entries(data.sessions)) {
+      if (typeof entry?.model !== 'string' || entry.model.length === 0) continue
+      state.sessions[id] = {
+        model: entry.model,
+        at: Number.isFinite(entry.at) ? entry.at : 0,
+        turns: Number.isFinite(entry.turns) ? entry.turns : 0,
+      }
+    }
   }
   return state
 }
@@ -270,6 +319,7 @@ export class RouterStore {
       this.state.visionVeto = {}
       this.state.visionOk = {}
       this.state.effortUnsupported = {}
+      this.state.sessions = {}
       delete this.state.lastSyncAt
       delete this.state.lastSyncError
     }
@@ -286,8 +336,45 @@ export class RouterStore {
   }
 
   setSyncError(message: string): void {
-    this.state.lastSyncError = message.slice(0, 500)
+    this.state.lastSyncError = redactSecrets(message).slice(0, 500)
     this.scheduleWrite()
+  }
+
+  /** Sticky model of one session, when the binding is still fresh. */
+  sessionModel(sessionId: string, now = Date.now()): SessionBinding | undefined {
+    const binding = this.state.sessions[sessionId]
+    if (binding === undefined) return undefined
+    if (binding.at > 0 && now - binding.at > SESSION_TTL_MS) {
+      delete this.state.sessions[sessionId]
+      return undefined
+    }
+    return binding
+  }
+
+  /** Pin (or refresh) the model of one session and count the served turn. */
+  bindSession(sessionId: string, model: string, now = Date.now()): SessionBinding {
+    const binding = this.state.sessions[sessionId] ?? { model, at: now, turns: 0 }
+    binding.model = model
+    binding.at = now
+    binding.turns += 1
+    this.state.sessions[sessionId] = binding
+    const ids = Object.keys(this.state.sessions)
+    if (ids.length > MAX_SESSIONS) {
+      ids
+        .sort((a, b) => (this.state.sessions[a]?.at ?? 0) - (this.state.sessions[b]?.at ?? 0))
+        .slice(0, ids.length - MAX_SESSIONS)
+        .forEach((id) => { delete this.state.sessions[id] })
+    }
+    this.scheduleWrite()
+    return binding
+  }
+
+  /** Forget one session binding (stale or failed model). */
+  dropSession(sessionId: string): void {
+    if (this.state.sessions[sessionId] !== undefined) {
+      delete this.state.sessions[sessionId]
+      this.scheduleWrite()
+    }
   }
 
   /** Record one routed call and its token use for balancing. */

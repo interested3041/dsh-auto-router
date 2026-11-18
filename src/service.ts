@@ -39,7 +39,7 @@ export interface HistoryView {
   at: number
   task: string
   modality: 'text' | 'image'
-  decisionSource: 'model' | 'heuristic' | 'fallback' | 'media'
+  decisionSource: 'model' | 'heuristic' | 'fallback' | 'media' | 'notice'
   decisionModel: string | null
   reasoning: string | null
   attempts: { model: string; ok: boolean; code: string | null }[]
@@ -74,6 +74,8 @@ export interface ConfigView {
   balanceWindowHours: number
   thinkingEffort: 'auto' | 'off' | 'low' | 'medium' | 'high' | 'max'
   enableMediaRouting: boolean
+  stickySession: boolean
+  sessionTurnLimit: number
   maxCandidatesForDecision: number
   includeSpecialEndpoints: boolean
   excludeModels: string[]
@@ -312,6 +314,8 @@ async function stateView(ctx: HostContext, router: Router, store: RouterStore): 
       balanceWindowHours: options.balanceWindowHours,
       thinkingEffort: options.thinkingEffort,
       enableMediaRouting: options.enableMediaRouting,
+      stickySession: options.stickySession,
+      sessionTurnLimit: options.sessionTurnLimit,
       maxCandidatesForDecision: options.maxCandidatesForDecision,
       includeSpecialEndpoints: options.includeSpecialEndpoints,
       excludeModels: [...options.excludeModels],

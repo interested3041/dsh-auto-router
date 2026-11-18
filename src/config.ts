@@ -72,6 +72,10 @@ export interface Config {
   thinkingEffort: Volatile<'auto' | 'off' | 'low' | 'medium' | 'high' | 'max'>
   /** Route media intents (image generation) to the endpoint that serves them. */
   enableMediaRouting: Volatile<boolean>
+  /** Keep one model for the whole session instead of rotating on every turn. */
+  stickySession: Volatile<boolean>
+  /** Turns after which a session may be re-selected (keeps load balance fair). */
+  sessionTurnLimit: Volatile<number>
   /** Per-task ordered candidate model ids. */
   taskRoutes: Volatile<Record<TaskType, string[]>>
   /** User execution-pool entries; merged over the built-in catalog. */
@@ -116,6 +120,8 @@ export const Config = z.object({
   balanceWindowHours: z.number().step(1).min(1).max(720).default(24).volatile(),
   thinkingEffort: z.union(['auto', 'off', 'low', 'medium', 'high', 'max'] as const).default('auto').volatile(),
   enableMediaRouting: z.boolean().default(true).volatile(),
+  stickySession: z.boolean().default(true).volatile(),
+  sessionTurnLimit: z.number().step(1).min(1).max(200).default(8).volatile(),
   taskRoutes: taskRoutesSchema.volatile(),
   models: z.array(modelSchema).default([]).volatile(),
 })
@@ -145,6 +151,8 @@ export interface RouterOptions {
   readonly balanceWindowHours: number
   readonly thinkingEffort: 'auto' | 'off' | 'low' | 'medium' | 'high' | 'max'
   readonly enableMediaRouting: boolean
+  readonly stickySession: boolean
+  readonly sessionTurnLimit: number
   readonly taskRoutes: Record<TaskType, readonly string[]>
   readonly models: readonly ConfigModel[]
   /** Credential references tried in order; the first configured one wins. */
@@ -226,6 +234,8 @@ export function resolveOptions(config: Config): RouterOptions {
     thinkingEffort: (['auto', 'off', 'low', 'medium', 'high', 'max'] as const)
       .find(value => value === plain(config.thinkingEffort)) ?? 'auto',
     enableMediaRouting: plain(config.enableMediaRouting) !== false,
+    stickySession: plain(config.stickySession) !== false,
+    sessionTurnLimit: positiveInt(Number(plain(config.sessionTurnLimit)), 8, 1),
     taskRoutes,
     models,
   }

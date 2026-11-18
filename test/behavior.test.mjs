@@ -170,12 +170,13 @@ check(snapshot.pool.media.image.length === 2, '媒体池识别出 2 个图像生
 check(snapshot.pool.entries.length === 5, '对话池只含 5 个对话模型')
 
 /** Run one request and return its routing record. */
-async function run(text) {
+async function run(text, extra = {}) {
   const chunks = []
   for await (const chunk of router.stream({
     provider: 'bailian-auto',
     model: 'bailian-auto',
     messages: [{ role: 'user', id: 'm', content: [{ type: 'text', text }], source: { kind: 'user' } }],
+    ...extra,
   }, router.capture())) chunks.push(chunk)
   return { record: store.state.history.at(-1), text: chunks.filter(c => c.type === 'text-delta').map(c => c.text).join(''), chunks }
 }
@@ -209,11 +210,36 @@ check(['high', 'max'].includes(deepCall?.effort), `复杂请求下发高/最高�
 check(calls.filter(call => call.url === '/v1/chat/completions' && call.effort !== undefined).length > 0,
   '确实向下游下发了 reasoning_effort')
 
+// ---- video intent: short-circuit reply, zero model calls and zero tokens ----
+console.log('\n=== 视频意图 ===')
+const videoPrompts = [
+  '帮我生成一个汽车简单视频,并附上喇叭声音',
+  '做一个小视频,内容是猫咪',
+  '生成一个 10 秒的动画短片',
+]
+for (const prompt of videoPrompts) {
+  const before = calls.length
+  const result = await run(prompt)
+  const used = calls.slice(before)
+  check(result.record?.decisionSource === 'notice', `视频意图被识别并短路: ${prompt.slice(0, 16)}…`)
+  check(used.length === 0, '短路时没有发起任何模型调用(0 token)')
+  check(/没有视频生成模型|视频模型/.test(result.text), '回复明确说明本账号无视频模型')
+  check(/另行安排|继续/.test(result.text), '回复给出替代方案并询问是否继续')
+}
+
+// video intent must not swallow image or chat requests
+const imageStillWorks = await run('画一张蓝色的车')
+check(imageStillWorks.record?.decisionSource === 'media', '图像意图仍走图像生成')
+const chatStillWorks = await run('这个视频格式用什么编码比较好?')
+check(chatStillWorks.record?.decisionSource !== 'notice', '讨论视频(非生成)不会被误判为视频意图')
+
 // ---- media routing: image request goes to /images/generations ----
 console.log('\n=== 图像生成 ===')
+const imageCallsBefore = calls.filter(call => call.url === '/v1/images/generations').length
+const filesBefore = (await readdir(join(workspace, '.dsh-media')).catch(() => [])).length
 const imageRun = await run('帮我画一张赛博朋克风格的猫,夜色霓虹')
-const imageCalls = calls.filter(call => call.url === '/v1/images/generations')
-const savedFiles = await readdir(join(workspace, '.dsh-media')).catch(() => [])
+const imageCalls = calls.filter(call => call.url === '/v1/images/generations').slice(imageCallsBefore)
+const savedFiles = (await readdir(join(workspace, '.dsh-media')).catch(() => [])).slice(filesBefore)
 check(imageCalls.length === 1, '图像请求命中 /images/generations 一次')
 check(/qwen-image|wan2/.test(imageCalls[0]?.model ?? ''), `使用图像模型: ${imageCalls[0]?.model}`)
 check(imageRun.record?.decisionSource === 'media', '路由记录标记为 media')
@@ -228,6 +254,67 @@ const imageCandidates = imageSnapshot.pool.entries.filter(entry => entry.traits.
 check(!imageCandidates.includes('qwen3.8-max-0902') || store.visionVetoed('qwen3.8-max-0902'),
   '被否决的模型不再作为视觉模型的首选')
 check(store.visionVetoed('qwen3.8-max-0902'), '否决状态已持久化')
+
+// ---- video capability gate: exclusion nouns must never short-circuit ----
+console.log('\n=== 视频闸门(排除词优先) ===')
+const excludedPrompts = [
+  '生成一个视频脚本,包含分镜',
+  '帮我生成一张视频封面图',
+  '生成视频提示词',
+  '视频分镜脚本',
+  '做一个动画演示PPT',
+  '剪辑这段视频',
+]
+for (const prompt of excludedPrompts) {
+  const result = await run(prompt)
+  check(result.record?.decisionSource !== 'notice', `排除词不短路: ${prompt.slice(0, 14)}`)
+}
+const coverRun = await run('帮我生成一张视频封面图')
+check(coverRun.record?.decisionSource === 'media', '视频封面走图像分支,不是短路')
+const coverQuestion = await run('封面用什么颜色比较好?')
+check(coverQuestion.record?.decisionSource !== 'media', '封面裸名词问句不进图像分支')
+check(coverQuestion.record?.decisionSource !== 'notice', '封面裸名词问句不被视频短路')
+
+// The positive cases must still short-circuit.
+for (const prompt of ['做一个10秒汽车视频', '做一个小视频,内容是猫咪', '生成一个10秒的动画短片']) {
+  const result = await run(prompt)
+  check(result.record?.decisionSource === 'notice', `生成意图仍短路: ${prompt.slice(0, 14)}`)
+}
+
+// ---- session stickiness: one conversation keeps one model ----
+console.log('\n=== 会话粘模型 ===')
+const sticky1 = await run('用 Python 写一个二分查找', { sessionId: 'sess-sticky' })
+const sticky2 = await run('用 Python 写一个二分查找', { sessionId: 'sess-sticky' })
+check(sticky1.record?.finalModel !== undefined, '首轮记录了最终模型')
+check(sticky1.record?.finalModel === sticky2.record?.finalModel, '同会话两轮固定同一模型')
+check(store.sessionModel('sess-sticky')?.turns === 2, '会话轮次累计到 2')
+const otherSession = await run('用 Python 写一个二分查找', { sessionId: 'sess-other' })
+check(store.sessionModel('sess-other') !== undefined, '不同会话各自绑定')
+check(otherSession.record?.finalModel !== undefined, '新会话也记录了最终模型')
+check(store.sessionModel('sess-sticky-missing') === undefined, '未绑定会话返回 undefined')
+
+// Reselection once the turn limit is reached: the pin is dropped for this turn,
+// the balanced head picks again, and the binding turns over on success.
+store.state.sessions['sess-turn'] = {
+  model: sticky1.record.finalModel, at: Date.now(), turns: 8,
+}
+const turnLimitRun = await run('用 Python 写一个二分查找', { sessionId: 'sess-turn' })
+check(turnLimitRun.record?.ok === true, '达到轮次上限后仍正常选模型')
+check(store.sessionModel('sess-turn')?.turns === 9, '达到轮次上限后重选并刷新轮次计数')
+
+// Requests without a sessionId never write a binding and fall back to per-request rotation.
+const sessionsBefore = Object.keys(store.state.sessions).length
+await run('用 Python 写一个二分查找')
+await run('用 Python 写一个二分查找')
+check(Object.keys(store.state.sessions).length === sessionsBefore, '缺 sessionId 不写会话绑定(请求级轮转)')
+
+// ---- secrets never reach the persisted state ----
+console.log('\n=== 密钥打码 ===')
+store.setSyncError('sync failed: Bearer abcdefghijklmnop apiKey=sk-1234567890abcdef')
+const persisted = store.state.lastSyncError ?? ''
+check(!persisted.includes('sk-1234567890abcdef'), '同步错误中的 sk- 密钥已打码')
+check(!persisted.includes('abcdefghijklmnop'), '同步错误中的 Bearer 串已打码')
+check(!JSON.stringify(store.state).includes('sk-1234567890abcdef'), 'state 不含明文密钥')
 
 await new Promise(resolve => server.close(resolve))
 await store.dispose()

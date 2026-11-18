@@ -3,6 +3,31 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.2.0] - 2026-11-18
+
+### 新增
+
+- **视频意图能力闸门**:识别"生成/制作/合成……视频/短片/动画"等生成意图;账号无可用视频模型时
+  **零 token 短路**回复(能力说明 + 替代方案),路由记录记为 `decisionSource: "notice"`。
+  排除词(脚本/文案/分镜/提示词/大纲/封面/海报/缩略图/首帧/演示/PPT/编码/格式/剪辑)优先:
+  "生成视频脚本""视频封面图""剪辑这段视频"会降级为对话或图像,不会误短路。
+- **会话粘模型路由**:同一 `sessionId` 固定首选模型,避免连续轮换打掉 provider 的 prompt cache 与
+  tool-call 格式稳定性;同会话每 N 轮(默认 8,`sessionTurnLimit`)或上下文接近绑定模型窗口时允许重选以保持均衡;
+  缺失 `sessionId` 时降级为请求级轮转;绑定 TTL 24h、上限 200 条、换账号清空。
+
+### 修复
+
+- 恢复 `postbuild` 经典脚本校验(`npm run build` 末尾执行),防止 `lib/client.js` 被追加
+  `export {}` 导致客户端 `SyntaxError: Unexpected token 'export'`;`prepublishOnly` 改为 build + test。
+- 错误记录写入端白名单:路由记录只持久化 `model / ok / code`;同步错误入库前经
+  `redactSecrets()` 打码;测试断言 `state.json` 不含 `sk-` / `Bearer` / `apiKey` 明文。
+
+### 变更
+
+- 面板额度状态措辞改为「本地冷却状态(启发式,非真实配额)」,`decisionSource` 在面板中中文化,
+  `notice` 显示为「未调用模型(能力闸门)」。
+- 视频替代方案文案不再承诺本机 ffmpeg 合成,改为「另行安排(需你确认)」。
+
 ## [0.1.0] - 2026-11-18
 
 首个发布版本。

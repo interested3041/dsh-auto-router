@@ -121,7 +121,8 @@ function history(value: unknown): HistoryView | undefined {
     at: num(entry.at),
     task: str(entry.task, 'general'),
     modality: modality === 'image' ? 'image' : 'text',
-    decisionSource: source === 'model' || source === 'fallback' || source === 'media' ? source : 'heuristic',
+    decisionSource: source === 'model' || source === 'fallback' || source === 'media' || source === 'notice'
+      ? source : 'heuristic',
     decisionModel: strOrNull(entry.decisionModel),
     reasoning: strOrNull(entry.reasoning),
     attempts: list(entry.attempts, (attempt) => {
@@ -185,6 +186,8 @@ function config(value: unknown): ConfigView {
     thinkingEffort: (['auto', 'off', 'low', 'medium', 'high', 'max'] as const)
       .find(value => value === entry.thinkingEffort) ?? 'auto',
     enableMediaRouting: bool(entry.enableMediaRouting, true),
+    stickySession: bool(entry.stickySession, true),
+    sessionTurnLimit: num(entry.sessionTurnLimit, 8),
     poolSyncIntervalHours: num(entry.poolSyncIntervalHours, 24),
     maxCandidatesForDecision: num(entry.maxCandidatesForDecision, 14),
     includeSpecialEndpoints: bool(entry.includeSpecialEndpoints),
