@@ -94,6 +94,8 @@ export interface RouterState {
   effortUnsupported: Record<string, number>
   /** Session id -> sticky model, so one conversation keeps one model. */
   sessions: Record<string, SessionBinding>
+  /** Per-model cumulative usage (calls + tokens), used for configured limits. */
+  modelTotals: Record<string, { calls: number; tokens: number }>
 }
 
 const STATE_VERSION = 1 as const
@@ -122,6 +124,7 @@ function freshState(): RouterState {
     visionOk: {},
     effortUnsupported: {},
     sessions: {},
+    modelTotals: {},
   }
 }
 
@@ -169,6 +172,15 @@ function sanitize(raw: unknown): RouterState {
     if (typeof raw !== 'object' || raw === null) continue
     for (const [id, at] of Object.entries(raw)) {
       if (typeof at === 'number' && Number.isFinite(at)) state[key][id] = at
+    }
+  }
+  if (typeof data.modelTotals === 'object' && data.modelTotals !== null) {
+    for (const [model, entry] of Object.entries(data.modelTotals)) {
+      if (typeof entry !== 'object' || entry === null) continue
+      state.modelTotals[model] = {
+        calls: Number.isFinite(entry.calls) ? entry.calls : 0,
+        tokens: Number.isFinite(entry.tokens) ? entry.tokens : 0,
+      }
     }
   }
   if (Array.isArray(data.history)) {
@@ -316,6 +328,7 @@ export class RouterStore {
       this.state.pool = []
       this.state.quota = {}
       this.state.usage = {}
+      this.state.modelTotals = {}
       this.state.visionVeto = {}
       this.state.visionOk = {}
       this.state.effortUnsupported = {}
@@ -384,6 +397,9 @@ export class RouterStore {
     entry.calls += 1
     entry.tokens += Math.max(0, Math.round(tokens))
     entry.lastAt = now
+    const total = this.state.modelTotals[model] ??= { calls: 0, tokens: 0 }
+    total.calls += 1
+    total.tokens += Math.max(0, Math.round(tokens))
     this.scheduleWrite()
   }
 
@@ -397,6 +413,33 @@ export class RouterStore {
     if (entry === undefined) return { calls: 0, tokens: 0, lastAt: 0 }
     if (now - entry.lastAt > windowMs) return { calls: 0, tokens: 0, lastAt: entry.lastAt }
     return entry
+  }
+
+  /** Per-model lifetime usage, for configured limits. */
+  modelTotalsOf(model: string): { calls: number; tokens: number } {
+    return this.state.modelTotals[model] ?? { calls: 0, tokens: 0 }
+  }
+
+  /**
+   * Whether one model is still inside its configured limit. A model without a
+   * limit, or whose limit fields are all unset, is always within limit.
+   * @param model - model id.
+   * @param limits - `Record<model, { maxCalls?, maxTokens? }>`.
+   */
+  withinLimit(model: string, limits: Readonly<Record<string, { maxCalls?: number; maxTokens?: number }>>): boolean {
+    const limit = limits[model]
+    if (limit === undefined) return true
+    const total = this.modelTotalsOf(model)
+    if (typeof limit.maxCalls === 'number' && total.calls >= limit.maxCalls) return false
+    if (typeof limit.maxTokens === 'number' && total.tokens >= limit.maxTokens) return false
+    return true
+  }
+
+  /** Clear one model's lifetime usage, or every model's when omitted. */
+  resetModelTotals(model?: string): void {
+    if (model === undefined) this.state.modelTotals = {}
+    else delete this.state.modelTotals[model]
+    this.scheduleWrite()
   }
 
   /** Remember that a model rejected image input. */

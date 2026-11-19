@@ -17,6 +17,8 @@ import {
   DEFAULT_BASE_URL, DEFAULT_CONTEXT_WINDOW, inferVision, PROVIDER, VIRTUAL_MODEL,
 } from './catalog.js'
 import type { TaskType } from './catalog.js'
+import { thinkingDispatch } from './classify.js'
+import type { ThinkingDispatch } from './classify.js'
 import { resolveOptions } from './config.js'
 import type { Config, RouterOptions } from './config.js'
 import { discoverConnection } from './connection.js'
@@ -45,6 +47,8 @@ export interface PoolEntryView {
   speed: number
   /** Inferred task affinities. */
   tasks: readonly string[]
+  /** Endpoint capability category. */
+  category: string
 }
 
 /** Identity of one connection: endpoint plus the credential in use. */
@@ -207,6 +211,7 @@ export class Router {
         quality: entry.traits.quality,
         speed: entry.traits.speed,
         tasks: entry.traits.tasks,
+        category: entry.traits.category,
       }))
     // A different account may not serve the configured decision/fallback ids;
     // degrade to models it does serve instead of failing every request.
@@ -466,7 +471,7 @@ export class Router {
       ...(options.signal ? { signal: options.signal } : {}),
     })
     const tools = serializeTools(options.tools)
-    const reasoningEffort = this.effortFor(model, effort)
+    const thinking = this.thinkingFor(model, effort)
     const request = {
       model,
       messages,
@@ -474,18 +479,30 @@ export class Router {
       ...(options.temperature === undefined ? {} : { temperature: options.temperature }),
       ...(options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens }),
       ...(options.stop === undefined ? {} : { stop: options.stop }),
-      ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+      ...(thinking === undefined
+        ? {}
+        : {
+          enableThinking: thinking.enableThinking,
+          ...(thinking.thinkingBudget === undefined ? {} : { thinkingBudget: thinking.thinkingBudget }),
+        }),
     }
     try {
       yield* streamAttempt(client, request, options.signal)
     } catch (error) {
-      // A provider that rejects the reasoning parameter must not fail the turn:
-      // remember the fact and retry the same model without it.
-      if (reasoningEffort !== undefined && error instanceof LlmError
-        && (error.code === 'INVALID_REQUEST' || error.code === 'UNSUPPORTED_OPTION')
-        && /reason|thinking|effort/i.test(error.message)) {
+      // A provider that rejects the thinking parameters must not fail the turn:
+      // remember the fact and retry the same model with every thinking knob
+      // stripped. The match must cover Bailian's own spellings, including
+      // Chinese parameter-error text and `counting/thinking_budget` / `reasoning`.
+      if (thinking !== undefined && error instanceof LlmError
+        && (error.code === 'INVALID_REQUEST' || error.code === 'UNSUPPORTED_OPTION' || error.code === 'HTTP_400')
+        && /thinking|effort|budget|reason|参数|思考|推理/i.test(error.message)) {
         this.store.markEffortUnsupported(model)
-        yield* streamAttempt(client, { ...request, reasoningEffort: undefined }, options.signal)
+        yield* streamAttempt(client, {
+          ...request,
+          enableThinking: undefined,
+          thinkingBudget: undefined,
+          reasoningEffort: undefined,
+        }, options.signal)
         return
       }
       throw error
@@ -518,13 +535,19 @@ export class Router {
     return declared || this.store.visionConfirmed(model)
   }
 
-  /** Map a harness effort onto what this exact model can accept. */
-  private effortFor(model: string, effort: string | undefined): 'off' | 'low' | 'medium' | 'high' | 'max' | undefined {
-    if (effort === undefined || effort === 'off') return undefined
+  /**
+   * Resolve the thinking parameters this exact model should receive.
+   *
+   * Honors the effort the decision (or a caller override) selected, but maps it
+   * to the Bailian `enable_thinking` switch — never to `reasoning_effort`. A
+   * model that previously rejected thinking parameters is left untouched.
+   */
+  private thinkingFor(model: string, effort: string | undefined): ThinkingDispatch | undefined {
     if (this.store.effortUnsupported(model)) return undefined
-    const entry = undefined as undefined
-    void entry
-    return effort as 'low' | 'medium' | 'high' | 'max'
+    if (effort === 'off' || effort === 'low' || effort === 'medium' || effort === 'high' || effort === 'max') {
+      return thinkingDispatch(model, effort)
+    }
+    return undefined
   }
 
   /** Emit one complete assistant text reply as a well-formed chunk stream. */

@@ -39,13 +39,24 @@
 
 ## 使用前提
 
-DSH 里要先有一个**能访问百炼的模型接入**：在「设置 → 模型」里配一个指向百炼 OpenAI 兼容端点
-（`https://dashscope.aliyuncs.com/compatible-mode/v1` 或你的 workspace 端点）的接入，填好 API key。
+> **⚠️ Base URL 必须和 API Key 是同一计费方案配套的，否则会 401；各地域、各业务空间的 Key 不互通。**
 
-本插件会**自动找到并沿用**这个接入的端点和凭据，你不用重复填。
-（本机已由 DSH 的 `llm-pi-ai` 接入承担，插件自动沿用；它不依赖任何名为 `dsh-aliyun-bailian-provider` 的包，缺包也不会报错。）
+阿里云百炼的 OpenAI 兼容端点有四类，按你的 Key 类型选对的那一个：
 
-凭据查找顺序：`BAILIAN_API_KEY` → `DASHSCOPE_API_KEY` → `ALIYUN_API_KEY`（DSH 凭据服务优先，其次启动环境变量）。
+| 域名 | 适用的 Key |
+|---|---|
+| `https://dashscope.aliyuncs.com/compatible-mode/v1` | 跨业务空间的**共享域名** Key |
+| `https://{WorkspaceId}.{region}.maas.aliyuncs.com/compatible-mode/v1` | **仅限**该业务空间自己的 Key |
+| `trial.{region}.maas.aliyuncs.com` | 试用空间 Key |
+| Token Plan / Coding Plan 专属域名 | 仅限交互式工具，**不适用于**本插件的普通对话路由 |
+
+本插件会扫描 profile 里所有指向阿里云（`aliyuncs.com`）的 OpenAI 兼容接入，**自动沿用**第一个能解析出凭据的那个端点 + Key，你不需要重复填。它不绑定任何特定包名，也不依赖 `llm-pi-ai` 之类的外部插件。
+
+本机当前用的是**业务空间专属域名** `ws-0ha4etpemr33xny3.cn-beijing.maas.aliyuncs.com`，
+所以 `BAILIAN_API_KEY` 必须是**这个业务空间**的 Key；如果填成跨空间的共享 Key 或 dashscope Key，会 401。
+
+凭据查找顺序：接入自带的凭据引用 → `BAILIAN_API_KEY` → `DASHSCOPE_API_KEY` → `ALIYUN_API_KEY`
+（DSH 凭据服务优先，其次启动环境变量）。
 
 ## 功能一览（大白话）
 
@@ -150,7 +161,7 @@ dsh plugin --profile web add /path/to/dsh-bailian-auto-router
 ```sh
 npm install
 npm run build      # tsc（宿主 + 客户端两套 tsconfig）+ 校验 client.js 为经典脚本（不含 ESM 语法）
-npm test           # 冒烟 + 分类/排序 + 路由 + 换账号 + 多账号管理 + 均衡/档位/媒体/视频闸门/会话粘，共 256 条断言
+npm test           # 冒烟 + 分类/排序 + 路由 + 换账号 + 多账号管理 + 均衡/档位/媒体/视频闸门/会话粘 + 额度上限，共 310 条断言
 npm run test:live  # 用本机真实凭据与端点跑通完整链路（会计费，按需）
 ```
 

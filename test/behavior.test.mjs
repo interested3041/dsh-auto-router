@@ -77,7 +77,7 @@ const server = http.createServer(async (req, res) => {
     req.on('data', chunk => { raw += chunk })
     req.on('end', () => resolve(raw.length > 0 ? JSON.parse(raw) : {}))
   })
-  calls.push({ url: req.url, model: body.model, effort: body.reasoning_effort, stream: body.stream === true })
+  calls.push({ url: req.url, model: body.model, stream: body.stream === true, enableThinking: body.enable_thinking, thinkingBudget: body.thinking_budget, reasoningEffort: body.reasoning_effort })
 
   if (req.url === '/v1/models') {
     res.writeHead(200, { 'content-type': 'application/json' })
@@ -154,7 +154,7 @@ const baseConfig = {
   balanceWindowHours: 24,
   thinkingEffort: 'auto',
   enableMediaRouting: true,
-  taskRoutes: { image: [], writing: [], translation: [], code: [], reasoning: [], general: [] },
+  taskRoutes: { image: [], writing: [], translation: [], code: [], reasoning: ['qwen3.8-max-0902'], general: [] },
   models: [],
 }
 
@@ -195,7 +195,7 @@ const unique = [...new Set(served)]
 check(unique.length >= 2, `相同任务在 ${unique.length} 个近等价模型间轮转: ${unique.join(', ')}`)
 check(served.filter(id => id === served[0]).length <= 4, '没有单一模型吃下全部请求')
 
-// ---- effort tracks complexity ----
+// ---- effort tracks complexity → Bailian enable_thinking (not reasoning_effort) ----
 console.log('\n=== 思考档位 ===')
 const beforeSimple = calls.length
 await run('你好')
@@ -203,12 +203,14 @@ const simpleCall = calls.slice(beforeSimple).find(call => call.url === '/v1/chat
 const beforeDeep = calls.length
 await run('请证明时间复杂度并推导渐进行为,给出完整实现和性能分析,架构层面也要说明')
 const deepCall = calls.slice(beforeDeep).find(call => call.url === '/v1/chat/completions' && call.stream === true)
-console.log(`   简单请求 → reasoning_effort=${simpleCall?.effort ?? '(none)'}`)
-console.log(`   复杂请求 → reasoning_effort=${deepCall?.effort ?? '(none)'}`)
-check(simpleCall !== undefined && simpleCall.effort === undefined, '简单请求不下发思考档位(关闭思考)')
-check(['high', 'max'].includes(deepCall?.effort), `复杂请求下发高/最高档: ${deepCall?.effort}`)
-check(calls.filter(call => call.url === '/v1/chat/completions' && call.effort !== undefined).length > 0,
-  '确实向下游下发了 reasoning_effort')
+console.log(`   简单请求 → enable_thinking=${simpleCall?.enableThinking} (model=${simpleCall?.model})`)
+console.log(`   复杂请求 → enable_thinking=${deepCall?.enableThinking} budget=${deepCall?.thinkingBudget} (model=${deepCall?.model})`)
+check(simpleCall !== undefined && simpleCall.enableThinking === false && simpleCall.thinkingBudget === undefined,
+  '简单请求关闭思考(enable_thinking:false)')
+check(deepCall !== undefined && deepCall.enableThinking === true && typeof deepCall.thinkingBudget === 'number' && deepCall.thinkingBudget > 0,
+  `复杂请求下发 enable_thinking:true + 预算 (${deepCall?.thinkingBudget})`)
+check((simpleCall?.reasoningEffort ?? undefined) === undefined && (deepCall?.reasoningEffort ?? undefined) === undefined,
+  '任何档位都不下发 reasoning_effort')
 
 // ---- video intent: short-circuit reply, zero model calls and zero tokens ----
 console.log('\n=== 视频意图 ===')

@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url'
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const lib = name => import(pathToFileURL(join(root, 'lib', name)).href)
 const { classifyModel } = await lib('classify.js')
+const { supportsThinkingSwitch, thinkingDispatch } = await lib('classify.js')
 const { buildPool, rankForTask } = await lib('pool.js')
 
 const results = []
@@ -152,6 +153,43 @@ check(forced.entries.some(entry => entry.id === 'qwen-deep-research-2025-12-15')
 const coldStart = buildPool({ synced: [], user: [], options })
 check(coldStart.entries.length > 20, `冷启动(未同步)仍有候选: ${coldStart.entries.length} 个`)
 check(coldStart.entries.some(entry => entry.id === 'deepseek-v4.1-flash-1017'), '冷启动含默认决策模型')
+
+// --- thinking-parameter mapping (§1) ---------------------------------------
+// The Bailian /chat/completions switch is `enable_thinking` + `thinking_budget`,
+// never `reasoning_effort`. These assert the family detection and the effort
+// ladder the router will send.
+check(supportsThinkingSwitch('qwen3.8-max') === true, 'qwen3.8-max 支持思考开关')
+check(supportsThinkingSwitch('qwq-plus') === true, 'qwq 系支持思考开关')
+check(supportsThinkingSwitch('qvq-max') === true, 'qvq 系支持思考开关')
+check(supportsThinkingSwitch('glm-5.2') === true, 'glm-5.2 支持思考开关')
+check(supportsThinkingSwitch('kimi-k2.5') === true, 'kimi 系支持思考开关')
+check(supportsThinkingSwitch('step-3.7-flash') === true || supportsThinkingSwitch('stepfun/step-5-preview') === true, 'step 系支持思考开关')
+check(supportsThinkingSwitch('vanchin/deepseek-v3.2-think') === true, 'deepseek-think 支持思考开关')
+check(supportsThinkingSwitch('deepseek-v4-pro') === false, 'deepseek-v4-pro 无思考开关')
+check(supportsThinkingSwitch('deepseek-v4.1-flash') === false, 'deepseek-v4.1-flash 无思考开关')
+check(supportsThinkingSwitch('MiniMax/MiniMax-M3') === false, 'MiniMax 无思考开关')
+
+// off → qwen receives enable_thinking:false; a no-switch family receives nothing.
+const offQwen = thinkingDispatch('qwen3.8-max', 'off')
+check(offQwen !== undefined && offQwen.enableThinking === false && offQwen.thinkingBudget === undefined,
+  'off 对 qwen 产生 enable_thinking:false(无预算)')
+check(thinkingDispatch('deepseek-v4-pro', 'off') === undefined, 'off 对无思考族不产生思考参数')
+check(thinkingDispatch('qwen3.8-max', undefined) === undefined, '无档位不产生思考参数')
+
+// low/medium → enable_thinking:true with the provider's default budget.
+const lowQwen = thinkingDispatch('qwen3.8-max', 'low')
+check(lowQwen !== undefined && lowQwen.enableThinking === true && lowQwen.thinkingBudget === undefined,
+  'low 产生 enable_thinking:true(默认预算)')
+check(thinkingDispatch('glm-5.2', 'medium')?.enableThinking === true, 'medium 产生 enable_thinking:true')
+
+// high/max → a budget cap, never a reasoning_effort:"max".
+const highQwen = thinkingDispatch('qwen3.8-max', 'high')
+const maxQwen = thinkingDispatch('qwen3.8-max', 'max')
+check(highQwen?.enableThinking === true && typeof highQwen?.thinkingBudget === 'number' && highQwen.thinkingBudget > 0,
+  'high 产生 enable_thinking:true + thinking_budget')
+check(maxQwen?.enableThinking === true && maxQwen?.thinkingBudget === 65536, 'max 产生 65536 预算上限')
+check(Object.prototype.hasOwnProperty.call(maxQwen ?? {}, 'reasoningEffort') === false,
+  'max 不产生 reasoning_effort 字段')
 
 const failed = results.filter(ok => !ok).length
 console.log(`\n${results.length - failed}/${results.length} checks passed`)

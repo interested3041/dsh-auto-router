@@ -1,7 +1,64 @@
 # Changelog
 
+## [0.4.0] - 2026-11-19
+
+### 修复(紧急)
+
+- **思考参数:百炼走 `enable_thinking` + `thinking_budget`,不再发 `reasoning_effort`**。
+  之前 `effortFor()` 是未实现占位,把 `low/medium/high/max` 原样当 OpenAI `reasoning_effort` 发出——
+  `max` 不是合法值(400),qwen3/qwq/qvq/deepseek-think 等的开关其实是 `enable_thinking(bool)`。
+  `max` 全期都不再产生 `reasoning_effort:"max"`。
+- **按模型族映射思考参数**:qwen/qwq/qvq/glm(4.5+)/kimi/step/deepseek-think 用 `enable_thinking`;
+  `high/max` 追加 `thinking_budget`(32768/65536);`off` 发 `enable_thinking:false`;
+  无思考族(deepseek-v4-pro 等)什么都不发。profile/会话级 `reasoningEffort` 覆盖值也走同一映射。
+- **放宽拒参重试**:400/INVALID_REQUEST 且 message 含 `thinking|effort|budget|reason|参数|思考|推理` 任一 →
+  去掉全部思考参数重试同一模型,仍失败才换模型,不再整轮报错。
+
+### 新增
+
+- **分类展开面板**:模型池按「图像 / 语音 / 推理 / 代码 / 写作 / 翻译 / 通用」分类折叠,点开分类才展开,
+  上百模型不平铺;分类依据 `classify.ts` 的端点类别 + 任务亲和,图像/语音类并入对应媒体端点。
+- **每模型额度上限**:单模型可设 `maxCalls`(调用次数) 与 `maxTokens`(token) 双计量,
+  达到任一上限即停用并自动路由下一个;不设=自动均衡。面板可 JSON 编辑、看每模型用量、一键重置。
+  本地累计用量存于 `state.json`,换账号自动清空。
+- **一键完整性自检**:新 RPC `selfCheck`,逐项检测 API Key 解析 / 端点连通(GET /models) / 模型池非空 /
+  client.js 经典脚本 / state.json 可写 / 思考参数映射,返回 ✓/✗ + 修复引导。面板「一键检测完整性」按钮触发。
+- 新增 `scripts/selfcheck.mjs`,用本机真实凭据跑一遍自检(6 项)。
+
+### 变更
+
+- README「使用前提」按官方 base-url 文档纠正:列清 dashscope 共享 / 业务空间专属 / 试用 / Token-Plan 四类域名
+  及适用 key,加粗警告「Base URL 必须与同一计费方案的 API Key 配套,否则 401;各地域 key 不互通」,
+  注明本机业务空间域名 `ws-0ha4etpemr33xny3.cn-beijing.maas.aliyuncs.com`;「自动沿用」改为与
+  `connection.ts` 实际行为一致(扫 profile 里阿里云兼容接入并沿用,不写死 llm-pi-ai)。
+
+### 测试
+
+- 冒烟 30(端点 9→11)、分类 83(思考映射 18)、路由 76(思考 wire 16 + 额度上限 8)、
+  多账号 30、均衡/档位 67、换账号 24,总计 **310 条断言**;`tsc` 双配置 0 错、
+  postbuild 确认 client.js 经典脚本。
+
+
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [语义化版本](https://semver.org/lang/zh-CN/)。
+
+## [0.3.1] - 2026-11-19
+
+### 修复
+
+- **面板「RPC 通道不可用」**:客户端贡献的描述符缺少 `namespace` / `service` / `id`,
+  Typert 网关把命名空间装成了 `remote.undefined`,面板永远取不到 `remote.bailianRouter`。
+  现在九个端点都带完整标识,并与宿主方法的参数名逐一对齐。
+- **宿主改用源码标记(SRC)暴露 Remote**:删除手写的 `./typert` 清单(它缺少生成器要求的
+  `input` / `invoke`,`validateTypertManifest` 会拒绝),改为在服务实例上绑定 `typertRemote`、
+  在原型上写方法标记,网关据此按方法参数名推导线格式。包内仍然零第三方运行时依赖。
+- **失败时不再挡住内置配置表单**:远端命名空间未挂载时不再注册 `plugins.bundle.config` 键
+  (否则会用一张错误卡片替换掉 DSH 自带的配置表单),并在页脚显示
+  「远程通道未挂载 · 改用内置配置表单」。
+
+### 测试
+
+- 冒烟增至 **30 条**:新增 SRC 绑定/标记/参数名断言,以及「客户端端点与宿主参数名一致」的漂移检查。
 
 ## [0.3.0] - 2026-11-18
 

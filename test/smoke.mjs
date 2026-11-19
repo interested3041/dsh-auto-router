@@ -18,7 +18,8 @@ function assert(condition, message) {
 
 // 1. Build artifacts exist.
 assert(existsSync(join(root, '..', 'lib', 'index.js')), 'lib/index.js exists')
-assert(existsSync(join(root, '..', 'lib', 'typert.host.js')), 'lib/typert.host.js exists')
+assert(existsSync(join(root, '..', 'lib', 'remote.js')), 'lib/remote.js exists')
+assert(!existsSync(join(root, '..', 'dist')), 'no stale dist directory')
 assert(existsSync(join(root, '..', 'lib', 'client.js')), 'lib/client.js exists')
 
 // 1b. The client bundle must be a classic script (the loader evals it as one).
@@ -39,7 +40,8 @@ assert(typeof host.apply === 'function', 'apply is a function')
 assert(host.name === 'bailian-auto-router', 'name is bailian-auto-router')
 assert(Array.isArray(host.inject) && host.inject.includes('llm'), 'inject includes llm')
 assert(host.Config !== undefined, 'Config schema exported')
-assert(host.TYPERT !== undefined && host.TYPERT.package === 'dsh-bailian-auto-router', 'TYPERT manifest exported')
+assert(Array.isArray(host.REMOTE_ENDPOINTS) && host.REMOTE_ENDPOINTS.length === 11, 'REMOTE_ENDPOINTS lists the 11 endpoints')
+assert(!('TYPERT' in host), 'no generated Typert artifact is exported (source markers are used)')
 
 // 3. Pure routing helpers behave.
 const catalog = await import(pathToFileURL(join(root, '..', 'lib', 'catalog.js')).href)
@@ -53,9 +55,67 @@ const parsed = decision.parseDecision('```json\n{"selected_model":"qwen-plus","r
 assert(parsed?.selectedModel === 'qwen-plus', 'parseDecision extracts from fenced JSON')
 assert(decision.parseDecision('no json here') === undefined, 'parseDecision rejects non-JSON')
 
-// 4. Typert host manifest has the full RPC surface (incl. account management).
-const methods = host.TYPERT.invocations.map(inv => inv.method).sort()
-assert(JSON.stringify(methods) === JSON.stringify(['activateAccount', 'clearHistory', 'getState', 'refreshPool', 'removeAccount', 'resetQuota', 'switchConnection', 'updateConfig', 'upsertAccount']), 'TYPERT methods are complete')
+// 4. The Host service is discoverable by the Gateway's source (SRC) route:
+//    a frozen `typertRemote` binding on the instance plus a marker record on
+//    the prototype, and every marker must resolve to a prototype method whose
+//    emitted parameter list the Gateway can parse.
+const remoteModule = await import(pathToFileURL(join(root, '..', 'lib', 'remote.js')).href)
+const MARKER_KEY = '@deepseek-ai/dsh-typert-protocol/remote-methods'
+const provided = []
+const fakeCtx = {
+  root: { reflect: { props: {} }, accessor() { /* recorded as declared */ } },
+  provide(name, value) { provided.push({ name, value }) },
+  logger: { info() {}, warn() {}, error() {}, debug() {} },
+}
+const fakeImpl = Object.fromEntries(
+  ['getState', 'updateConfig', 'refreshPool', 'switchConnection', 'upsertAccount', 'removeAccount', 'activateAccount', 'resetQuota', 'clearHistory']
+    .map(method => [method, async () => ({ ok: method })]),
+)
+remoteModule.provideRemoteService(fakeCtx, fakeImpl)
+
+assert(provided.length === 1 && provided[0].name === 'bailianRouter', 'service registered under the bailianRouter key')
+const instance = provided[0].value
+const binding = instance.typertRemote
+assert(binding !== undefined && Object.isFrozen(binding), 'typertRemote binding present and frozen')
+assert(binding.service === instance, 'binding names the service instance itself')
+assert(binding.serviceKey === 'bailianRouter' && binding.namespace === 'bailianRouter', 'binding declares key and namespace')
+
+const marker = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(instance), MARKER_KEY)?.value
+assert(marker?.version === 1, 'prototype carries a version 1 marker record')
+const marked = (marker?.methods ?? []).map(entry => entry.method).sort()
+assert(JSON.stringify(marked) === JSON.stringify([...remoteModule.REMOTE_ENDPOINTS].map(endpoint => endpoint.split('/')[1]).sort()), 'every endpoint is marked')
+
+/** Mirror the Gateway: read the emitted parameter list, rejecting anything but plain identifiers. */
+function parameterNames(fn) {
+  const source = Function.prototype.toString.call(fn)
+  const open = source.indexOf('(')
+  const close = source.indexOf(')', open + 1)
+  const body = source.slice(open + 1, close).trim()
+  if (body.length === 0) return []
+  return body.split(',').map(part => part.trim())
+}
+const prototype = Object.getPrototypeOf(instance)
+const expectedWires = {
+  getState: [], updateConfig: ['patch'], refreshPool: [],
+  switchConnection: ['entryId', 'providerId'], upsertAccount: ['account'],
+  removeAccount: ['id'], activateAccount: ['id'], resetQuota: ['model'],
+  resetModelTotals: ['model'], selfCheck: [], clearHistory: [],
+}
+let wiresOk = true
+for (const [method, wires] of Object.entries(expectedWires)) {
+  const implementation = prototype[method]
+  if (typeof implementation !== 'function') { wiresOk = false; break }
+  if (JSON.stringify(parameterNames(implementation)) !== JSON.stringify(wires)) { wiresOk = false; break }
+}
+assert(wiresOk, 'prototype parameter lists parse as the wire names the Client sends')
+assert(instance.getState instanceof Function, 'methods are callable on the instance')
+
+// 5. Client contribution must repeat the same namespace and wire names.
+const clientEndpoints = [...clientSource.matchAll(/endpoint\('([A-Za-z]+)'\)/g)].map(match => match[1]).sort()
+assert(JSON.stringify(clientEndpoints) === JSON.stringify(Object.keys(expectedWires).sort()), 'client declares exactly the marked endpoints')
+assert(/namespace:\s*NS/.test(clientSource) && /service:\s*NS/.test(clientSource), 'client descriptors carry namespace and service')
+const clientWires = [...clientSource.matchAll(/param\('([A-Za-z]+)'/g)].map(match => match[1]).sort()
+assert(JSON.stringify(clientWires) === JSON.stringify(['account', 'entryId', 'id', 'id', 'model', 'model', 'patch', 'providerId'].sort()), 'client wire names match the Host parameter names')
 
 // Report.
 let failed = 0

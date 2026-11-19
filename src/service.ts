@@ -3,12 +3,17 @@
  * Typert gateway: state reads, configuration edits (persisted through the
  * harness config editor), pool sync, and quota resets.
  */
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { TaskType } from './catalog.js'
 import { TASK_TYPES } from './catalog.js'
+import { thinkingDispatch } from './classify.js'
 import type { ConfigModel, SavedAccount } from './config.js'
 import { invalidateConnectionCache, listConnections } from './connection.js'
 import type { HostContext } from './context.js'
-import { apiKeyConfigured } from './router.js'
+import { BailianClient } from './http.js'
+import { apiKeyConfigured, resolveApiKey } from './router.js'
 import type { Router } from './router.js'
 import type { RouterStore } from './store.js'
 
@@ -34,6 +39,13 @@ export interface PoolModelView {
   vision: boolean
   contextWindow: number | null
   source: 'user' | 'builtin' | 'sync'
+  /** Endpoint capability category (`chat` | `image` | `speech` | …). */
+  category: string
+  /** Task affinities (`writing`/`translation`/`code`/`reasoning`/`image`/`general`). */
+  tasks: string[]
+  /** Inferred quality (5–100) and speed (5–100, higher = cheaper). */
+  quality: number
+  speed: number
 }
 
 /** One model's local quota status. */
@@ -100,6 +112,8 @@ export interface ConfigView {
   accounts: AccountView[]
   /** Active saved account id; empty = default endpoint / auto-adopt. */
   activeAccountId: string
+  /** Per-model usage limits (`maxCalls` / `maxTokens`), empty = no limit. */
+  modelLimits: Record<string, { maxCalls?: number; maxTokens?: number }>
 }
 
 /** Complete state snapshot returned by every RPC method. */
@@ -131,12 +145,33 @@ export interface RouterStateView {
   candidates: { entryId: string; providerId: string; baseURL: string; apiKeyEnv: string | null; current: boolean }[]
   /** Configured models this account does not serve, and the substitutes in use. */
   derived: { decisionModel: boolean; fallbackModel: boolean } | null
+  /** Per-model lifetime usage (calls + tokens), shown beside each limit. */
+  modelUsage: Record<string, { calls: number; tokens: number }>
 }
 
 /** Result of the pool-sync operation. */
 export interface RefreshResult {
   ok: boolean
   message: string
+  state: RouterStateView
+}
+
+/** One integrity check result item shown by the one-click self-check. */
+export interface SelfCheckItem {
+  /** Short human name of the check. */
+  name: string
+  ok: boolean
+  /** What was observed. */
+  detail: string
+  /** Optional fix/guidance text when the check failed. */
+  hint?: string
+}
+
+/** Result of the one-click integrity self-check. */
+export interface SelfCheckResult {
+  /** True only when every item passed. */
+  ok: boolean
+  items: SelfCheckItem[]
   state: RouterStateView
 }
 
@@ -170,6 +205,8 @@ export interface ConfigPatch {
   models?: ConfigModel[]
   accounts?: SavedAccount[]
   activeAccountId?: string
+  /** Per-model usage limits; an empty object clears every limit. */
+  modelLimits?: Record<string, { maxCalls?: number; maxTokens?: number }>
 }
 
 /** Sanitize one incoming patch; throws on unusable values. */
@@ -207,6 +244,29 @@ function sanitizePatch(patch: unknown): Record<string, unknown> {
       throw new Error(`thinkingEffort must be one of ${allowed.join(', ')}`)
     }
     out.thinkingEffort = input.thinkingEffort
+  }
+  if (input.modelLimits !== undefined) {
+    const limits = input.modelLimits
+    if (typeof limits !== 'object' || limits === null || Array.isArray(limits)) {
+      throw new Error('modelLimits must be an object mapping model id -> { maxCalls?, maxTokens? }')
+    }
+    const cleaned: Record<string, { maxCalls?: number; maxTokens?: number }> = {}
+    for (const [model, value] of Object.entries(limits as Record<string, unknown>)) {
+      if (value === null) continue // null clears a model's limit
+      if (typeof value !== 'object') throw new Error(`modelLimits.${model} must be an object or null`)
+      const entry = value as Record<string, unknown>
+      const maxCalls = typeof entry.maxCalls === 'number' ? entry.maxCalls : undefined
+      const maxTokens = typeof entry.maxTokens === 'number' ? entry.maxTokens : undefined
+      const callsOk = maxCalls === undefined || (Number.isSafeInteger(maxCalls) && maxCalls >= 1)
+      const tokensOk = maxTokens === undefined || (Number.isSafeInteger(maxTokens) && maxTokens >= 1)
+      if (!callsOk || !tokensOk) throw new Error(`modelLimits.${model} has invalid maxCalls/maxTokens`)
+      if (maxCalls === undefined && maxTokens === undefined) continue
+      cleaned[model] = {
+        ...(maxCalls === undefined ? {} : { maxCalls }),
+        ...(maxTokens === undefined ? {} : { maxTokens }),
+      }
+    }
+    out.modelLimits = cleaned
   }
   if (input.excludeModels !== undefined) {
     if (!Array.isArray(input.excludeModels) || input.excludeModels.some(item => typeof item !== 'string')) {
@@ -382,6 +442,7 @@ async function stateView(ctx: HostContext, router: Router, store: RouterStore): 
       models: options.models.map(model => ({ ...model })),
       accounts,
       activeAccountId: options.activeAccountId,
+      modelLimits: { ...options.modelLimits },
     },
     pool: {
       models: snapshot.entries.map(entry => ({
@@ -390,6 +451,10 @@ async function stateView(ctx: HostContext, router: Router, store: RouterStore): 
         vision: entry.vision,
         contextWindow: entry.contextWindow ?? null,
         source: entry.source,
+        category: entry.category,
+        tasks: entry.tasks.slice(),
+        quality: entry.quality,
+        speed: entry.speed,
       })),
       count: snapshot.entries.length,
       total: snapshot.pool.total,
@@ -410,6 +475,7 @@ async function stateView(ctx: HostContext, router: Router, store: RouterStore): 
     },
     quota,
     history,
+    modelUsage: Object.fromEntries(snapshot.entries.map(entry => [entry.id, store.modelTotalsOf(entry.id)])),
     adopted: snapshot.adopted === undefined ? null : {
       entryId: snapshot.adopted.entryId,
       providerId: snapshot.adopted.providerId,
@@ -427,6 +493,10 @@ export interface BailianRouterService {
   updateConfig(patch: ConfigPatch): Promise<RouterStateView>
   /** Point the router at another Aliyun connection found in this profile. */
   switchConnection(entryId: string, providerId: string): Promise<RefreshResult>
+  /** Reset one model's lifetime usage counters (or every model's when omitted). */
+  resetModelTotals(model?: string): Promise<RouterStateView>
+  /** Run the one-click integrity self-check (credential, endpoint, pool, client, state, thinking). */
+  selfCheck(): Promise<SelfCheckResult>
   /** Add or update one saved Bailian account (raw key persisted as a secret). */
   upsertAccount(account: SavedAccount): Promise<RouterStateView>
   /** Delete one saved account; clears the active selection when it was active. */
@@ -533,6 +603,91 @@ export function createService(ctx: HostContext, router: Router, store: RouterSto
       invalidateConnectionCache()
       const result = await router.syncPool(true)
       return { ok: result.ok, message: result.message, state: await stateView(ctx, router, store) }
+    },
+    async resetModelTotals(model?: string) {
+      await store.ready
+      store.resetModelTotals(typeof model === 'string' && model.length > 0 ? model : undefined)
+      return stateView(ctx, router, store)
+    },
+    async selfCheck() {
+      await store.ready
+      const snapshot = router.capture()
+      const items: SelfCheckItem[] = []
+
+      // 1. API key resolution
+      let apiKey: string | undefined
+      try {
+        const resolved = await resolveApiKey(ctx, snapshot.options.apiKeyRefs, snapshot.options.apiKeyDirect)
+        apiKey = resolved.key
+        items.push({ name: 'API Key', ok: true, detail: `凭据已解析 (${resolved.ref})` })
+      } catch (error) {
+        items.push({
+          name: 'API Key', ok: false, detail: String((error as Error)?.message ?? error).slice(0, 200),
+          hint: '在 DSH 凭据服务或启动环境设置 BAILIAN_API_KEY / DASHSCOPE_API_KEY / ALIYUN_API_KEY,或确保 profile 里有指向阿里云的接入',
+        })
+      }
+
+      // 2. Endpoint reachability (GET /models)
+      if (apiKey !== undefined) {
+        try {
+          const client = new BailianClient({ baseURL: snapshot.options.baseURL, apiKey, streamIdleTimeoutMs: 30_000 })
+          const listed = await client.listModels()
+          items.push({ name: '端点连通', ok: true, detail: `GET /models 返回 ${listed.length} 个模型` })
+        } catch (error) {
+          items.push({
+            name: '端点连通', ok: false, detail: String((error as Error)?.message ?? error).slice(0, 200),
+            hint: 'Base URL 必须与 API Key 同一计费方案配套,否则 401;各地域/业务空间 key 不互通',
+          })
+        }
+      } else {
+        items.push({ name: '端点连通', ok: false, detail: '无凭据,跳过', hint: '先修复 API Key' })
+      }
+
+      // 3. Pool non-empty
+      if (snapshot.pool.entries.length > 0) {
+        items.push({ name: '模型池', ok: true, detail: `${snapshot.pool.entries.length} 个可对话模型` })
+      } else {
+        items.push({ name: '模型池', ok: false, detail: '模型池为空', hint: '点击「刷新模型列表」,或等待首次自动同步' })
+      }
+
+      // 4. client.js classic script
+      try {
+        const dir = dirname(fileURLToPath(import.meta.url))
+        const clientSource = readFileSync(join(dir, 'client.js'), 'utf8')
+        const classic = !/^\s*(?:import\s|export\s)/m.test(clientSource)
+        items.push({
+          name: 'client.js 经典脚本', ok: classic,
+          detail: classic ? '无 ESM 语法,可被浏览器按经典脚本求值' : '检测到 import/export(浏览器会 SyntaxError)',
+          ...(classic ? {} : { hint: '重新 npm run build(postbuild 会强制校验为经典脚本)' }),
+        })
+      } catch (error) {
+        items.push({
+          name: 'client.js', ok: false, detail: String((error as Error)?.message ?? error).slice(0, 200),
+          hint: '确认 lib/client.js 存在(先在插件目录跑 npm run build)',
+        })
+      }
+
+      // 5. state.json writable
+      try {
+        await store.flush()
+        items.push({ name: 'state.json 可写', ok: true, detail: '状态文件可写' })
+      } catch (error) {
+        items.push({
+          name: 'state.json 可写', ok: false, detail: String((error as Error)?.message ?? error).slice(0, 200),
+          hint: '检查 ~/.dsh/bailian-auto-router 目录权限',
+        })
+      }
+
+      // 6. Thinking parameter mapping
+      const think = thinkingDispatch('qwen3.8-max', 'high')
+      const thinkOk = think?.enableThinking === true && typeof think?.thinkingBudget === 'number'
+      items.push({
+        name: '思考参数映射', ok: thinkOk,
+        detail: thinkOk ? `high → enable_thinking:true + budget ${think?.thinkingBudget}` : '映射异常',
+        ...(thinkOk ? {} : { hint: '这是插件 bug,请升级到最新版' }),
+      })
+
+      return { ok: items.every(item => item.ok), items, state: await stateView(ctx, router, store) }
     },
     async resetQuota(model?: string) {
       await store.ready

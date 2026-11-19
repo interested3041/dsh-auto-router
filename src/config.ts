@@ -105,6 +105,16 @@ export interface Config {
   accounts: Volatile<SavedAccount[]>
   /** Active saved account id; empty = use `baseURL`/`apiKeyEnv` (or auto-adopt). */
   activeAccountId: Volatile<string>
+  /** Per-model usage limits (max calls and/or max tokens); exceeding stops routing that model. */
+  modelLimits: Volatile<Record<string, ModelLimit>>
+}
+
+/** One model's configured usage limit; at least one field should be set. */
+export interface ModelLimit {
+  /** Maximum routed calls; once reached, the model stops being offered. */
+  maxCalls?: number
+  /** Maximum tokens (input+output+cache); once reached, the model stops being offered. */
+  maxTokens?: number
 }
 
 const taskRoutesSchema = z.object(Object.fromEntries(
@@ -159,6 +169,10 @@ export const Config = z.object({
   models: z.array(modelSchema).default([]).volatile(),
   accounts: z.array(accountSchema).default([]).volatile(),
   activeAccountId: z.string().default('').volatile(),
+  modelLimits: z.dict(z.object({
+    maxCalls: z.number().step(1).min(1),
+    maxTokens: z.number().step(1).min(1),
+  })).default({}).volatile(),
 })
 
 /** Detached, validated settings snapshot captured per request/operation. */
@@ -194,6 +208,7 @@ export interface RouterOptions {
   readonly accounts: readonly SavedAccount[]
   /** Active saved account id; empty = use `baseURL`/`apiKeyEnv` (or auto-adopt). */
   readonly activeAccountId: string
+  readonly modelLimits: Record<string, { maxCalls?: number; maxTokens?: number }>
   /** Direct API key of the active saved account, when it stores one (never logged). */
   readonly apiKeyDirect?: string
   /** Credential references tried in order; the first configured one wins. */
@@ -207,6 +222,30 @@ function plain<T>(value: Volatile<T> | T): T {
 
 function positiveInt(value: number, fallback: number, min = 1): number {
   return Number.isSafeInteger(value) && value >= min ? value : fallback
+}
+
+/**
+ * Normalize the per-model usage limits into a detached record. Invalid entries
+ * are dropped rather than failing the whole config load.
+ * @param raw - whatever the config held (Volatile-unwrapped).
+ */
+function resolveModelLimits(raw: unknown): Record<string, { maxCalls?: number; maxTokens?: number }> {
+  const out: Record<string, { maxCalls?: number; maxTokens?: number }> = {}
+  if (typeof raw !== 'object' || raw === null) return out
+  for (const [model, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value !== 'object' || value === null) continue
+    const entry = value as Record<string, unknown>
+    const maxCalls = Number(entry.maxCalls)
+    const maxTokens = Number(entry.maxTokens)
+    const callsOk = Number.isSafeInteger(maxCalls) && maxCalls >= 1
+    const tokensOk = Number.isSafeInteger(maxTokens) && maxTokens >= 1
+    if (!callsOk && !tokensOk) continue
+    out[model] = {
+      ...(callsOk ? { maxCalls } : {}),
+      ...(tokensOk ? { maxTokens } : {}),
+    }
+  }
+  return out
 }
 
 /**
@@ -298,6 +337,7 @@ export function resolveOptions(config: Config): RouterOptions {
     models,
     accounts,
     activeAccountId: accounts.some(account => account.id === activeAccountId) ? activeAccountId : '',
+    modelLimits: resolveModelLimits(plain(config.modelLimits)),
   }
 }
 

@@ -217,3 +217,57 @@ export function classifyModel(id: string, options: { includeSpecialEndpoints?: b
 export function isSnapshot(id: string): boolean {
   return /-\d{4}(?:-\d{2}){0,2}$|-\d{3,4}$/.test(id) && !/qwen\d|glm-\d/i.test(id.slice(-6))
 }
+
+/** Reasoning-effort ladder the harness hands the router (after `auto` is resolved). */
+export type ThinkingEffort = 'off' | 'low' | 'medium' | 'high' | 'max'
+
+/** Wire thinking parameters for one Bailian OpenAI-compatible model. */
+export interface ThinkingDispatch {
+  /** The `enable_thinking` boolean sent to the provider. */
+  enableThinking: boolean
+  /** The `thinking_budget` cap sent alongside `enable_thinking: true`. */
+  thinkingBudget?: number
+}
+
+/**
+ * Whether one model id is served by a family whose OpenAI-compatible endpoint
+ * honors the Bailian thinking switch (`enable_thinking` + `thinking_budget`).
+ *
+ * The families that do — qwen / qwq / qvq, deepseek-think/reasoner, glm 4.5+,
+ * kimi, step — must NOT receive `reasoning_effort`; they toggle thinking with
+ * `enable_thinking`. Plain deepseek chat variants (v4-pro, v4-flash), minimax,
+ * ling and the rest are "no-thinking-switch" families: sending `enable_thinking`
+ * is either ignored or rejected, so the router sends nothing for them.
+ */
+export function supportsThinkingSwitch(id: string): boolean {
+  const lower = id.toLowerCase()
+  if (/qwen|qwq|qvq/.test(lower)) return true
+  if (/deepseek/.test(lower)) return /think|r1|reasoner/i.test(lower)
+  if (/glm/.test(lower)) return /glm[-_.]?(?:4\.(?:[5-9]|[1-9]\d)|[5-9])/i.test(lower)
+  if (/\bkimi\b/.test(lower)) return true
+  // stepfun / step-3.7 / step-5 …; "step" must be a standalone family token.
+  return /(?:^|[/_.-])step(?:fun)?([-_.]|\d)/i.test(id)
+}
+
+/**
+ * Map one effort level onto the Bailian thinking switch for a specific model.
+ * Never emits `reasoning_effort`; `max` maps to the largest budget, not a
+ * non-existent effort value.
+ *
+ * @param id - exact model id from the account listing or config.
+ * @param effort - resolved effort level (low/medium/high/max/off).
+ * @returns the parameters to send, or `undefined` when the provider must not
+ *   receive any thinking parameter (absent effort, unsupported family, or the
+ *   model already learned that it rejects them).
+ */
+export function thinkingDispatch(id: string, effort: ThinkingEffort | undefined): ThinkingDispatch | undefined {
+  if (effort === undefined) return undefined
+  if (!supportsThinkingSwitch(id)) return undefined
+  switch (effort) {
+    case 'off': return { enableThinking: false }
+    case 'low':
+    case 'medium': return { enableThinking: true }
+    case 'high': return { enableThinking: true, thinkingBudget: 32768 }
+    case 'max': return { enableThinking: true, thinkingBudget: 65536 }
+  }
+}

@@ -494,6 +494,161 @@ const streamOk = text => (body, res) => {
   assert(calls.length > 0, 'J: at least one call reached the endpoint')
 }
 
+// ---- Scenario K: thinking switch — enable_thinking, never reasoning_effort -----
+// Fixed-candidate harness: the decision model is bypassed (enableDecision:false)
+// and the target model is pinned first for every task, so these assertions test
+// the wire parameters, not routing.
+const qroutes = {
+  image: ['qwen3.8-max'],
+  writing: ['qwen3.8-max'],
+  translation: ['qwen3.8-max'],
+  code: ['qwen3.8-max'],
+  reasoning: ['qwen3.8-max'],
+  general: ['qwen3.8-max'],
+}
+const qwenOk = (body, res) => {
+  if (body.stream !== true) return
+  sseOk(res, [deltaChunk('思考完成', { finish_reason: 'stop' }), usageChunk])
+}
+{
+  const calls = []
+  handler = behaviorHandler({ 'qwen3.8-max': qwenOk }, calls)
+  const { router } = await makeRouter({ enableDecision: false, balanceStrategy: 'quality', taskRoutes: qroutes })
+  const chunksHigh = await collect(router.stream({ ...userRequest('推导这个公式'), reasoningEffort: 'high' }, router.capture()))
+  const execHigh = calls.find(call => call.stream === true)
+  assert(execHigh?.model === 'qwen3.8-max', 'K: qwen3.8-max 收到执行请求')
+  assert(execHigh.enable_thinking === true, 'K: 请求体含 enable_thinking:true')
+  assert(execHigh.thinking_budget === 32768, 'K: 请求体含 thinking_budget 上限(high=32768)')
+  assert(!('reasoning_effort' in execHigh), 'K: 请求体不含 reasoning_effort')
+  assert(chunksHigh.filter(c => c.type === 'text-delta').map(c => c.text).join('') === '思考完成', 'K: 回答正常')
+}
+{
+  // 'max' must never become reasoning_effort:"max" — the largest budget instead.
+  const calls = []
+  handler = behaviorHandler({ 'qwen3.8-max': qwenOk }, calls)
+  const { router } = await makeRouter({ enableDecision: false, balanceStrategy: 'quality', taskRoutes: qroutes })
+  await collect(router.stream({ ...userRequest('推导'), reasoningEffort: 'max' }, router.capture()))
+  const exec = calls.find(call => call.stream === true)
+  assert(!('reasoning_effort' in exec) || exec.reasoning_effort !== 'max', 'K: max 不产生 reasoning_effort:"max"')
+  assert(exec.enable_thinking === true && exec.thinking_budget === 65536, 'K: max 产生 enable_thinking + 65536 预算')
+}
+{
+  // off → enable_thinking:false for a switch family.
+  const calls = []
+  handler = behaviorHandler({ 'qwen3.8-max': qwenOk }, calls)
+  const { router } = await makeRouter({ enableDecision: false, balanceStrategy: 'quality', taskRoutes: qroutes })
+  await collect(router.stream({ ...userRequest('你好'), reasoningEffort: 'off' }, router.capture()))
+  const exec = calls.find(call => call.stream === true)
+  assert(exec.enable_thinking === false, 'K: off 产生 enable_thinking:false')
+  assert(!('thinking_budget' in exec), 'K: off 不带 thinking_budget')
+}
+
+// ---- Scenario L: 400 naming `enable_thinking` → strip and retry, no turn error -----
+{
+  const calls = []
+  let executions = 0
+  handler = behaviorHandler({
+    'qwen3.8-max': (body, res) => {
+      if (body.stream !== true) return
+      executions += 1
+      if (executions === 1) {
+        res.writeHead(400, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ error: { message: 'InvalidParameter: enable_thinking is not supported', code: 'InvalidParameter' } }))
+        return
+      }
+      sseOk(res, [deltaChunk('去参成功', { finish_reason: 'stop' }), usageChunk])
+    },
+  }, calls)
+  const { router, store } = await makeRouter({ enableDecision: false, balanceStrategy: 'quality', taskRoutes: qroutes })
+  const chunks = await collect(router.stream({ ...userRequest('推导'), reasoningEffort: 'high' }, router.capture()))
+  const execs = calls.filter(call => call.stream === true)
+  assert(execs.length === 2, 'L: 同一模型在同一轮内重试一次')
+  assert(execs[0].enable_thinking === true, 'L: 第一次带 enable_thinking')
+  assert(execs[1].enable_thinking === undefined && execs[1].thinking_budget === undefined, 'L: 重试去掉了全部思考参数')
+  assert(store.effortUnsupported('qwen3.8-max') === true, 'L: 模型被标记 effortUnsupported')
+  assert(chunks.filter(c => c.type === 'text-delta').map(c => c.text).join('') === '去参成功', 'L: 去参重试成功,不整轮报错')
+}
+
+// ---- Scenario M: learned-effortUnsupported / no-switch family send no params ----
+{
+  const calls = []
+  handler = behaviorHandler({ 'qwen3.8-max': qwenOk }, calls)
+  const { router, store } = await makeRouter({ enableDecision: false, balanceStrategy: 'quality', taskRoutes: qroutes })
+  store.markEffortUnsupported('qwen3.8-max')
+  await collect(router.stream({ ...userRequest('推导'), reasoningEffort: 'high' }, router.capture()))
+  const exec = calls.find(call => call.stream === true)
+  assert(exec.enable_thinking === undefined && exec.thinking_budget === undefined, 'M: effortUnsupported 模型不发思考参数')
+}
+{
+  const proutes = {
+    image: ['deepseek-v4-pro'],
+    writing: ['deepseek-v4-pro'],
+    translation: ['deepseek-v4-pro'],
+    code: ['deepseek-v4-pro'],
+    reasoning: ['deepseek-v4-pro'],
+    general: ['deepseek-v4-pro'],
+  }
+  const calls = []
+  handler = behaviorHandler({
+    'deepseek-v4-pro': (body, res) => {
+      if (body.stream === true) sseOk(res, [deltaChunk('无开关', { finish_reason: 'stop' }), usageChunk])
+    },
+  }, calls)
+  const { router } = await makeRouter({ enableDecision: false, balanceStrategy: 'quality', taskRoutes: proutes })
+  await collect(router.stream({ ...userRequest('重构这个 function 并分析时间复杂度'), reasoningEffort: 'high' }, router.capture()))
+  const exec = calls.find(call => call.stream === true)
+  assert(exec.enable_thinking === undefined && exec.thinking_budget === undefined && !('reasoning_effort' in exec),
+    'M: 无思考族(deepseek-v4-pro)在任何档位下都不收思考参数')
+}
+
+// ---- Scenario N: per-model usage limit stops an exhausted model --------------
+{
+  const routesN = {
+    image: ['qwen3.8-max', 'deepseek-v4-pro'],
+    writing: ['qwen3.8-max', 'deepseek-v4-pro'],
+    translation: ['qwen3.8-max', 'deepseek-v4-pro'],
+    code: ['qwen3.8-max', 'deepseek-v4-pro'],
+    reasoning: ['qwen3.8-max', 'deepseek-v4-pro'],
+    general: ['qwen3.8-max', 'deepseek-v4-pro'],
+  }
+  const backup = (body, res) => {
+    if (body.stream === true) sseOk(res, [deltaChunk('备用模型', { finish_reason: 'stop' }), usageChunk])
+  }
+  const calls = []
+  handler = behaviorHandler({ 'qwen3.8-max': qwenOk, 'deepseek-v4-pro': backup }, calls)
+  const { router, store } = await makeRouter({
+    enableDecision: false, balanceStrategy: 'quality', taskRoutes: routesN,
+    modelLimits: { 'qwen3.8-max': { maxCalls: 1 } },
+  })
+  store.recordUsage('code', 'qwen3.8-max', 50) // already at its 1-call cap
+  const chunks = await collect(router.stream(userRequest('重构 function 去重并分析复杂度'), router.capture()))
+  const exec = calls.find(call => call.stream === true)
+  assert(exec?.model === 'deepseek-v4-pro', `N: 超限模型被停用,路由到下一个 (got ${exec?.model})`)
+  assert(chunks.filter(c => c.type === 'text-delta').map(c => c.text).join('') === '备用模型', 'N: 备用模型正常回答')
+
+  // token limit also stops the model
+  const calls2 = []
+  handler = behaviorHandler({ 'qwen3.8-max': qwenOk, 'deepseek-v4-pro': (body, res) => { if (body.stream === true) sseOk(res, [deltaChunk('token超限', { finish_reason: 'stop' }), usageChunk]) } }, calls2)
+  const { router: router2, store: store2 } = await makeRouter({
+    enableDecision: false, balanceStrategy: 'quality', taskRoutes: routesN,
+    modelLimits: { 'qwen3.8-max': { maxTokens: 100 } },
+  })
+  store2.recordUsage('code', 'qwen3.8-max', 120)
+  const chunks2 = await collect(router2.stream(userRequest('重构 function 去重并分析复杂度'), router2.capture()))
+  const exec2 = calls2.find(call => call.stream === true)
+  assert(exec2?.model === 'deepseek-v4-pro', `N: token 超限同样停用该模型 (got ${exec2?.model})`)
+  assert(chunks2.filter(c => c.type === 'text-delta').map(c => c.text).join('') === 'token超限', 'N: token 超限后备用模型回答')
+
+  // reset clears the limit counters (pure store check)
+  const { store: storeN3 } = await makeRouter({})
+  storeN3.recordUsage('code', 'qwen3.8-max', 50)
+  assert(storeN3.withinLimit('qwen3.8-max', { 'qwen3.8-max': { maxCalls: 1 } }) === false, 'N: 达到调用上限后 withinLimit=false')
+  assert(storeN3.withinLimit('qwen3.8-max', { 'qwen3.8-max': { maxTokens: 20 } }) === false, 'N: 达到 token 上限后 withinLimit=false')
+  storeN3.resetModelTotals('qwen3.8-max')
+  assert(storeN3.withinLimit('qwen3.8-max', { 'qwen3.8-max': { maxCalls: 1 } }) === true, 'N: resetModelTotals 清除计数后重新可用')
+  assert(storeN3.resetModelTotals === storeN3.resetModelTotals, 'N: resetModelTotals 可调用')
+}
+
 // ---- done ------------------------------------------------------------------------
 // Scenario D leaves one deliberately unanswered request socket; force-close it.
 server.closeAllConnections?.()

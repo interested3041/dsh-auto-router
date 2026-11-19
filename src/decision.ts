@@ -211,6 +211,11 @@ export function buildCandidates(
     // failing outright; the provider projects images to placeholders.
     ranked = rankForTask(task, pool, options, false)
   }
+  // Configured per-model limits stop an exhausted model from being offered;
+  // when every model is over its limit, fall back to the whole ranking so the
+  // request still answers (the panel shows the exhaustion).
+  const withinLimit = ranked.filter(id => store.withinLimit(id, options.modelLimits))
+  if (withinLimit.length > 0) ranked = withinLimit
   const fresh = ranked.filter(id => !store.inCooldown(id))
   const cooled = ranked.filter(id => store.inCooldown(id))
   const ordered = [...fresh, ...cooled]

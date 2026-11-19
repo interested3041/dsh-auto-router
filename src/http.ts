@@ -39,8 +39,16 @@ export interface ChatRequest {
   temperature?: number
   maxTokens?: number
   stop?: string[]
-  /** Provider-specific reasoning depth (`reasoning_effort`), omitted when unknown. */
+  /**
+   * OpenAI-style reasoning depth (`reasoning_effort`). Bailian models are NOT
+   * sent this field — their thinking switch is `enable_thinking` + `thinking_budget`.
+   * Kept here for future non-Bailian OpenAI-compatible vendors.
+   */
   reasoningEffort?: 'off' | 'low' | 'medium' | 'high' | 'max'
+  /** Bailian thinking toggle (`enable_thinking`); omitted = provider default. */
+  enableThinking?: boolean
+  /** Bailian thinking token budget (`thinking_budget`); only sent with `enable_thinking: true`. */
+  thinkingBudget?: number
 }
 
 /** One parsed SSE chat.completion chunk (loosely typed; fields are optional per provider). */
@@ -214,6 +222,10 @@ export class BailianClient {
       ...(request.reasoningEffort === undefined || request.reasoningEffort === 'off'
         ? {}
         : { reasoning_effort: request.reasoningEffort }),
+      ...(request.enableThinking === undefined ? {} : { enable_thinking: request.enableThinking }),
+      ...(request.enableThinking !== true || request.thinkingBudget === undefined
+        ? {}
+        : { thinking_budget: request.thinkingBudget }),
       ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
     })
   }

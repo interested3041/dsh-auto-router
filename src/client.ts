@@ -21,6 +21,8 @@
     updateConfig(patch: Record<string, unknown>): Promise<any>
     refreshPool(): Promise<any>
     resetQuota(model?: string): Promise<any>
+    resetModelTotals(model?: string): Promise<any>
+    selfCheck(): Promise<any>
     clearHistory(): Promise<any>
     switchConnection(entryId: string, providerId: string): Promise<any>
     upsertAccount(account: Record<string, unknown>): Promise<any>
@@ -58,9 +60,10 @@
       const T = (zho: string, eng: string): string => (zh ? zho : eng)
 
       // ---- client-side Typert contribution ----------------------------------
-      // Parsers are intentionally tolerant: the Host half may be newer or older
-      // than this bundle, so a missing field degrades instead of breaking the
-      // panel. Only the outer shape is enforced.
+      // The Host half exposes its service through source markers only (SRC),
+      // so the Gateway derives each endpoint's wire names from the Host
+      // method's parameter list. Every descriptor below must repeat those names
+      // exactly and carry the namespace, or the mount installs the wrong one.
       const schema = (parse: (value: any) => any) => ({ parse })
       const codec = (name: string, parse: (value: any) => any) => ({
         mode: 'strict', typeSymbol: `${PACKAGE}#${name}`, schema: schema(parse), create: () => schema(parse),
@@ -70,48 +73,36 @@
         return value
       }
       const anyValue = (value: any): any => value
+      /** One JSON wire parameter, named exactly like the Host method parameter. */
+      const param = (wire: string, type: string, parse: (value: any) => any, optional = false) => ({
+        name: wire, wire, source: 'json', codec: codec(type, parse), ...(optional ? { acceptsUndefined: true } : {}),
+      })
+      /** Endpoint identity every descriptor of this namespace shares. */
+      const endpoint = (method: string) => ({
+        id: `${PACKAGE}#${NS}/${method}`,
+        service: NS,
+        namespace: NS,
+        method,
+        invocation: { kind: 'direct' as const },
+      })
       const contribution = {
         package: PACKAGE,
         descriptors: [
-          { method: 'getState', parameters: [], result: codec('RouterState', asObject) },
+          { ...endpoint('getState'), parameters: [], result: codec('RouterState', asObject) },
+          { ...endpoint('updateConfig'), parameters: [param('patch', 'ConfigPatch', asObject)], result: codec('RouterState', asObject) },
+          { ...endpoint('refreshPool'), parameters: [], result: codec('RefreshResult', asObject) },
+          { ...endpoint('resetQuota'), parameters: [param('model', 'ModelId', anyValue, true)], result: codec('RouterState', asObject) },
+          { ...endpoint('resetModelTotals'), parameters: [param('model', 'ModelId', anyValue, true)], result: codec('RouterState', asObject) },
+          { ...endpoint('clearHistory'), parameters: [], result: codec('RouterState', asObject) },
+          { ...endpoint('selfCheck'), parameters: [], result: codec('SelfCheckResult', asObject) },
           {
-            method: 'updateConfig',
-            parameters: [{ name: 'patch', wire: 'patch', source: 'json', codec: codec('ConfigPatch', asObject) }],
-            result: codec('RouterState', asObject),
-          },
-          { method: 'refreshPool', parameters: [], result: codec('RefreshResult', asObject) },
-          {
-            method: 'resetQuota',
-            parameters: [{
-              name: 'model', wire: 'model', source: 'json',
-              codec: codec('ModelId', anyValue), acceptsUndefined: true,
-            }],
-            result: codec('RouterState', asObject),
-          },
-          { method: 'clearHistory', parameters: [], result: codec('RouterState', asObject) },
-          {
-            method: 'switchConnection',
-            parameters: [
-              { name: 'entryId', wire: 'entryId', source: 'json', codec: codec('String', anyValue) },
-              { name: 'providerId', wire: 'providerId', source: 'json', codec: codec('String', anyValue) },
-            ],
+            ...endpoint('switchConnection'),
+            parameters: [param('entryId', 'String', anyValue), param('providerId', 'String', anyValue)],
             result: codec('RefreshResult', asObject),
           },
-          {
-            method: 'upsertAccount',
-            parameters: [{ name: 'account', wire: 'account', source: 'json', codec: codec('AccountInput', asObject) }],
-            result: codec('RouterState', asObject),
-          },
-          {
-            method: 'removeAccount',
-            parameters: [{ name: 'id', wire: 'id', source: 'json', codec: codec('String', anyValue) }],
-            result: codec('RouterState', asObject),
-          },
-          {
-            method: 'activateAccount',
-            parameters: [{ name: 'id', wire: 'id', source: 'json', codec: codec('String', anyValue) }],
-            result: codec('RefreshResult', asObject),
-          },
+          { ...endpoint('upsertAccount'), parameters: [param('account', 'AccountInput', asObject)], result: codec('RouterState', asObject) },
+          { ...endpoint('removeAccount'), parameters: [param('id', 'String', anyValue)], result: codec('RouterState', asObject) },
+          { ...endpoint('activateAccount'), parameters: [param('id', 'String', anyValue)], result: codec('RefreshResult', asObject) },
         ],
       }
 
@@ -190,6 +181,7 @@
         const [busy, setBusy] = useState(false)
         const [error, setError] = useState<string | null>(null)
         const [notice, setNotice] = useState<string | null>(null)
+        const [selfCheck, setSelfCheck] = useState<any>(null)
         const [acctForm, setAcctForm] = useState<any>({ id: '', name: '', baseURL: '', apiKey: '', apiKeyEnv: '' })
         const alive = useRef(true)
         useEffect(() => () => { alive.current = false }, [])
@@ -207,6 +199,7 @@
             rateLimitCooldownSeconds: String(next.config?.rateLimitCooldownSeconds ?? 120),
             taskRoutesText: Object.fromEntries(Object.entries(next.config?.taskRoutes ?? {}).map(([k, v]) => [k, (v as string[]).join(', ')])),
             modelsText: JSON.stringify(next.config?.models ?? [], null, 1),
+            modelLimitsText: JSON.stringify(next.config?.modelLimits ?? {}, null, 1),
             maxCandidatesForDecision: String(next.config?.maxCandidatesForDecision ?? 14),
             includeSpecialEndpoints: next.config?.includeSpecialEndpoints === true,
             excludeModelsText: (next.config?.excludeModels ?? []).join('\n'),
@@ -230,6 +223,17 @@
           if (!ctx?.remote?.$on) return undefined
           try { return ctx.remote.$on('settings/document-updated', () => { void load() }) } catch (_e) { return undefined }
         }, [ctx, load])
+
+        const runSelfCheck = useCallback(async () => {
+          if (!remote) return
+          setBusy(true); setError(null); setSelfCheck(null)
+          try {
+            const result = unwrap(await remote.selfCheck())
+            if (alive.current) setSelfCheck(result)
+            if (result?.state) applyState(result.state)
+          } catch (e: any) { setError(String(e?.message ?? e)) }
+          if (alive.current) setBusy(false)
+        }, [remote, applyState])
 
         const mutate = useCallback(async (fn: () => Promise<any>, okMessage?: string) => {
           if (!remote) return
@@ -274,6 +278,16 @@
             setError(T('自定义模型池 JSON 无效: ', 'Invalid models JSON: ') + String(e?.message ?? e))
             return
           }
+          let modelLimits: unknown
+          try {
+            modelLimits = JSON.parse(draft.modelLimitsText || '{}')
+            if (typeof modelLimits !== 'object' || modelLimits === null || Array.isArray(modelLimits)) {
+              throw new Error(T('额度上限必须是对象', 'model limits must be an object'))
+            }
+          } catch (e: any) {
+            setError(T('额度上限 JSON 无效: ', 'Invalid model limits JSON: ') + String(e?.message ?? e))
+            return
+          }
           const patch: Record<string, unknown> = {
             decisionModel: String(draft.decisionModel ?? '').trim(),
             fallbackModel: String(draft.fallbackModel ?? '').trim(),
@@ -293,6 +307,7 @@
               .split(/[\n,，]/).map((s: string) => s.trim()).filter((s: string) => s.length > 0),
             taskRoutes,
             models,
+            modelLimits,
           }
           if (!patch.decisionModel || !patch.fallbackModel) {
             setError(T('决策模型与回退模型不能为空', 'Decision and fallback models cannot be empty'))
@@ -507,50 +522,153 @@
               })),
           ),
 
-          // ---- pool & quota ----
+          (() => {
+            const models = state.pool?.models ?? []
+            const media = state.pool?.media ?? {}
+            const quota = state.quota ?? []
+            const quotaBy: Map<string, any> = new Map(quota.map((q: any) => [q.model, q]))
+            const byId: Map<string, any> = new Map(models.map((m: any) => [m.id, m]))
+            const pick = (ids: any[]) => [...new Set(ids)]
+            const withTask = (task: string) => models.filter((m: any) => (m.tasks ?? []).includes(task)).map((m: any) => m.id)
+            const GROUPS = [
+              { key: 'image', label: T('图像', 'Image'), ids: pick([...(media.image ?? []), ...withTask('image')]) },
+              { key: 'speech', label: T('语音', 'Speech'), ids: pick([...(media.speech ?? []), ...(media.asr ?? []), ...(media.realtime ?? [])]) },
+              { key: 'reasoning', label: T('推理', 'Reasoning'), ids: pick(withTask('reasoning')) },
+              { key: 'code', label: T('代码', 'Code'), ids: pick(withTask('code')) },
+              { key: 'writing', label: T('写作', 'Writing'), ids: pick(withTask('writing')) },
+              { key: 'translation', label: T('翻译', 'Translation'), ids: pick(withTask('translation')) },
+              { key: 'general', label: T('通用', 'General'), ids: pick(withTask('general')) },
+            ]
+            const modelRow = (id: string) => {
+              const meta = byId.get(id)
+              const q = quotaBy.get(id)
+              const available = q?.available ?? true
+              return h('tr', { key: id },
+                h('td', { className: 'bar-mono', style: { wordBreak: 'break-all' } }, id,
+                  meta?.name && meta.name !== id ? h('span', { className: 'bar-muted' }, ` (${meta.name})`) : null),
+                h('td', null, meta?.source ?? '—'),
+                h('td', null, meta?.vision ? '✓' : '—'),
+                h('td', null, available
+                  ? h(Badge, { tone: 'ok', text: T('可用', 'available') })
+                  : h(Badge, { tone: 'warn', text: `${T('冷却中', 'cooldown')} ${fmtDuration(q?.cooldownRemainingMs ?? 0)}` })),
+                h('td', null, String(q?.fails ?? 0)),
+                h('td', null, String(q?.calls ?? 0)),
+                h('td', { className: 'bar-muted' }, q?.lastFailCode ?? '—'),
+                h('td', null, available ? null : h('div', {
+                  className: 'bar-btn', role: 'button',
+                  onClick: () => void mutate(() => remote.resetQuota(id), T('已解除冷却: ', 'Cooldown cleared: ') + id),
+                }, T('解除', 'Clear'))),
+              )
+            }
+            return h('div', { className: 'bar-card' },
+              h('div', { className: 'bar-row' },
+                h('h4', null, T('模型池(按分类展开)', 'Model pool (collapsible by category)')),
+                h('div', {
+                  className: 'bar-btn', role: 'button',
+                  onClick: () => void mutate(() => remote.refreshPool(), T('已从百炼拉取模型列表', 'Model list refreshed from Bailian')),
+                }, T('刷新模型列表', 'Refresh pool')),
+                h('div', {
+                  className: 'bar-btn', role: 'button',
+                  onClick: () => void mutate(() => remote.resetQuota(), T('已解除全部冷却', 'All cooldowns cleared')),
+                }, T('全部解除冷却', 'Clear all cooldowns')),
+              ),
+              GROUPS.map((g) => {
+                if (g.ids.length === 0) return null
+                return h('details', { key: g.key, style: { borderTop: '1px solid var(--dsw-alias-border-l1)', padding: '6px 0' } },
+                  h('summary', { className: 'bar-muted', style: { cursor: 'pointer', userSelect: 'none' } },
+                    `${g.label} · ${g.ids.length} 个`),
+                  h('div', { style: { maxHeight: '240px', overflow: 'auto', marginTop: '4px' } },
+                    h('table', { className: 'bar-table' },
+                      h('thead', null, h('tr', null,
+                        h('th', null, T('模型', 'Model')),
+                        h('th', null, T('来源', 'Source')),
+                        h('th', null, T('视觉', 'Vision')),
+                        h('th', null, T('冷却', 'Cooldown')),
+                        h('th', null, T('连败', 'Fails')),
+                        h('th', null, T('调用', 'Calls')),
+                        h('th', null, T('错误', 'Error')),
+                        h('th', null, ''),
+                      )),
+                      h('tbody', null, g.ids.slice(0, 300).map((id) => modelRow(id))),
+                    ),
+                  ),
+                )
+              }),
+            )
+          })(),
+
+          // ---- per-model usage limits ----
           h('div', { className: 'bar-card' },
             h('div', { className: 'bar-row' },
-              h('h4', null, T('模型池与本地冷却状态（启发式，非真实配额）', 'Pool & local cooldown state (heuristic, not real quota)')),
+              h('h4', null, T('每模型额度上限', 'Per-model usage limits')),
               h('div', {
                 className: 'bar-btn', role: 'button',
-                onClick: () => void mutate(() => remote.refreshPool(), T('已从百炼拉取模型列表', 'Model list refreshed from Bailian')),
-              }, T('刷新模型列表', 'Refresh pool')),
-              h('div', {
-                className: 'bar-btn', role: 'button',
-                onClick: () => void mutate(() => remote.resetQuota(), T('已解除全部冷却', 'All cooldowns cleared')),
-              }, T('全部解除冷却', 'Clear all cooldowns')),
+                onClick: () => void mutate(() => remote.resetModelTotals(), T('已重置全部用量', 'All usage reset')),
+              }, T('重置全部用量', 'Reset all usage')),
             ),
-            h('div', { style: { maxHeight: '320px', overflow: 'auto' } },
+            h('div', { className: 'bar-muted' }, T(
+              '给单个模型设用量上限(token 和/或调用次数),达到上限就停用它并路由下一个;不设=自动均衡。JSON: { "模型id": { "maxCalls": 100, "maxTokens": 1000000 } },把某模型的值设为 null 即清除它的上限。',
+              'Set a per-model cap (tokens and/or calls). Reaching it stops the model and routing moves on; unset = auto-balance. JSON: { "model-id": { "maxCalls": 100, "maxTokens": 1000000 } }; null clears a model\'s limit.',
+            )),
+            h('textarea', {
+              className: 'bar-textarea', style: { minHeight: '80px' },
+              value: draft.modelLimitsText ?? '{}',
+              onChange: (e: any) => setDraft({ ...draft, modelLimitsText: e.target.value }),
+            }),
+            h('div', { style: { maxHeight: '200px', overflow: 'auto', marginTop: '4px' } },
               h('table', { className: 'bar-table' },
                 h('thead', null, h('tr', null,
                   h('th', null, T('模型', 'Model')),
-                  h('th', null, T('来源', 'Source')),
-                  h('th', null, T('视觉', 'Vision')),
-                  h('th', null, T('冷却状态(启发式)', 'Cooldown (heuristic)')),
-                  h('th', null, T('连败', 'Fails')),
                   h('th', null, T('调用', 'Calls')),
-                  h('th', null, T('最近错误', 'Last error')),
+                  h('th', null, T('token', 'Tokens')),
+                  h('th', null, T('上限', 'Limit')),
+                  h('th', null, T('状态', 'Status')),
                   h('th', null, ''),
                 )),
-                h('tbody', null, (state.quota ?? []).map((q: any) => {
-                  const meta = (state.pool?.models ?? []).find((m: any) => m.id === q.model)
-                  return h('tr', { key: q.model },
-                    h('td', { className: 'bar-mono' }, q.model,
-                      meta?.name && meta.name !== q.model ? h('span', { className: 'bar-muted' }, ` (${meta.name})`) : null),
-                    h('td', null, meta?.source ?? '—'),
-                    h('td', null, meta?.vision ? '✓' : '—'),
-                    h('td', null, q.available
-                      ? h(Badge, { tone: 'ok', text: T('可用', 'available') })
-                      : h(Badge, { tone: 'warn', text: `${T('冷却中', 'cooldown')} ${fmtDuration(q.cooldownRemainingMs)}` })),
-                    h('td', null, String(q.fails)),
-                    h('td', null, String(q.calls)),
-                    h('td', { className: 'bar-muted' }, q.lastFailCode ?? '—'),
-                    h('td', null, q.available ? null : h('div', {
+                h('tbody', null, (state.pool?.models ?? []).map((m: any) => {
+                  const usage = state.modelUsage?.[m.id] ?? { calls: 0, tokens: 0 }
+                  const limit = state.config?.modelLimits?.[m.id]
+                  const overCalls = typeof limit?.maxCalls === 'number' && usage.calls >= limit.maxCalls
+                  const overTokens = typeof limit?.maxTokens === 'number' && usage.tokens >= limit.maxTokens
+                  const over = overCalls || overTokens
+                  const limitText = limit === undefined ? '—'
+                    : [typeof limit.maxCalls === 'number' ? `${limit.maxCalls} 次` : '', typeof limit.maxTokens === 'number' ? `${limit.maxTokens} tok` : ''].filter(Boolean).join(' / ')
+                  return h('tr', { key: m.id },
+                    h('td', { className: 'bar-mono', style: { wordBreak: 'break-all' } }, m.id),
+                    h('td', null, String(usage.calls)),
+                    h('td', null, String(usage.tokens)),
+                    h('td', { className: 'bar-muted' }, limitText),
+                    h('td', null, limit === undefined
+                      ? h(Badge, { tone: 'none', text: T('未设限', 'unlimited') })
+                      : over
+                        ? h(Badge, { tone: 'err', text: T('超限', 'exhausted') })
+                        : h(Badge, { tone: 'ok', text: T('额度内', 'within') })),
+                    h('td', null, (usage.calls > 0 || usage.tokens > 0) ? h('div', {
                       className: 'bar-btn', role: 'button',
-                      onClick: () => void mutate(() => remote.resetQuota(q.model), T('已解除冷却: ', 'Cooldown cleared: ') + q.model),
-                    }, T('解除', 'Clear'))),
+                      onClick: () => void mutate(() => remote.resetModelTotals(m.id), T('已重置用量: ', 'Usage reset: ') + m.id),
+                    }, T('重置', 'Reset')) : null),
                   )
                 }))),
+            ),
+          ),
+
+          // ---- integrity self-check ----
+          h('div', { className: 'bar-card' },
+            h('div', { className: 'bar-row' },
+              h('h4', null, T('一键检测完整性', 'One-click integrity check')),
+              h('div', { className: 'bar-btn bar-btn-primary', role: 'button', onClick: () => void runSelfCheck() },
+                busy ? T('检测中…', 'Checking…') : T('开始检测', 'Run check')),
+            ),
+            selfCheck === null ? null : h('div', { style: { display: 'flex', flexDirection: 'column', gap: '4px' } },
+              h('div', { className: selfCheck.ok ? 'bar-ok' : 'bar-error' }, selfCheck.ok
+                ? T('✓ 全部通过,插件可在本机正常使用', 'All checks passed — the plugin works on this machine')
+                : T('✗ 存在未通过项,按下面的提示修复后重试', 'Some checks failed — follow the hints below and retry')),
+              (selfCheck.items ?? []).map((item: any, index: number) => h('div', { key: `${item.name}-${index}`, className: 'bar-row', style: { alignItems: 'flex-start' } },
+                h('span', { style: { color: item.ok ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-state-error-primary)', width: '18px', flex: 'none' } }, item.ok ? '✓' : '✗'),
+                h('span', { style: { minWidth: '130px', flex: 'none' } }, item.name),
+                h('span', { className: 'bar-muted', style: { flex: '1 1 auto' } }, item.detail),
+                item.hint ? h('span', { className: 'bar-muted', style: { display: 'block', width: '100%' } }, T('→ ', '→ ') + item.hint) : null,
+              )),
             ),
           ),
 
@@ -718,15 +836,30 @@
       // ---- Settings → Models footer card ---------------------------------------
       // The footer card needs the client ctx; capture it from apply().
       let clientCtx: any = null
+      /** Why the Remote contribution did not mount, shown in the footer card. */
+      let mountFailure: string | null = null
 
       function FooterCard() {
         const [line, setLine] = useState<string | null>(null)
         useEffect(() => {
           let disposed = false
+          let missing = false
           const run = async () => {
             try {
               const remote = clientCtx?.get?.(`remote.${NS}`) as BarRemoteApi | undefined
-              if (!remote) return
+              if (!remote) {
+                // Say so instead of leaving the card on "loading" forever: a
+                // failed mount is the one failure the panel cannot show.
+                if (!disposed && !missing) {
+                  missing = true
+                  const detail = mountFailure === null ? '' : `: ${mountFailure}`
+                  setLine(T(
+                    `百炼智能路由:远程通道未挂载 · 改用内置配置表单${detail}`,
+                    `Bailian auto router: remote channel not mounted · using the built-in form${detail}`,
+                  ))
+                }
+                return
+              }
               const state = unwrap(await remote.getState())
               if (disposed || !state) return
               const cooling = (state.quota ?? []).filter((q: any) => !q.available).length
@@ -755,17 +888,27 @@
               unmount = typeof result === 'function' ? result : () => { void result }
             }
           } catch (error) {
-            ctx.logger?.warn?.(`${PACKAGE}: remote contribution mount failed: ${String((error as Error)?.message ?? error)}`)
+            mountFailure = String((error as Error)?.message ?? error)
+            ctx.logger?.warn?.(`${PACKAGE}: remote contribution mount failed: ${mountFailure}`)
           }
           ctx.effect(() => () => { try { unmount?.() } catch (_e) { /* already gone */ } }, `${PACKAGE}: remote contribution`)
-
-          ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
-            name: 'plugins.bundle.config', key: PACKAGE, inject: () => ({ ctx }),
-          }, (props: any) => h(Panel, { ...props, ctx })))
 
           ctx.slots.inject('settings.models.footer', () => ctx.slots.register({
             name: 'settings.models.footer', id: 'bailian-auto-router-status', order: 50,
           }, FooterCard))
+
+          // Register the rich panel only when the Remote namespace really
+          // mounted: its key would otherwise replace the built-in
+          // configuration form with a dead error card.
+          let mounted = false
+          try { mounted = ctx.get?.(`remote.${NS}`) !== undefined } catch (_e) { mounted = false }
+          if (!mounted) {
+            ctx.logger?.warn?.(`${PACKAGE}: remote.${NS} unavailable — the built-in configuration form is used instead`)
+            return
+          }
+          ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
+            name: 'plugins.bundle.config', key: PACKAGE, inject: () => ({ ctx }),
+          }, (props: any) => h(Panel, { ...props, ctx })))
         },
       }
     },

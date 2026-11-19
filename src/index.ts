@@ -14,6 +14,7 @@ import { Config, resolveOptions } from './config.js'
 import { invalidateConnectionCache } from './connection.js'
 import type { HostContext } from './context.js'
 import { dshHomePath } from './home.js'
+import { provideRemoteService } from './remote.js'
 import { Router } from './router.js'
 import { createService } from './service.js'
 import { RouterStore } from './store.js'
@@ -21,7 +22,7 @@ import { RouterStore } from './store.js'
 export { Config } from './config.js'
 export type { ConfigModel, RouterOptions } from './config.js'
 export type { RouterStateView, ConfigPatch, BailianRouterService } from './service.js'
-export { TYPERT } from './typert.host.js'
+export { REMOTE_ENDPOINTS } from './remote.js'
 
 /** Plugin row name used by the loader. */
 export const name = 'bailian-auto-router'
@@ -45,8 +46,10 @@ export function apply(ctx: HostContext, config: Config): void {
   ctx.effect(() => ctx.llm.registerAdapter([PROVIDER], adapter), `${PACKAGE}: llm adapter`)
   ctx.effect(() => () => { void store.dispose() }, `${PACKAGE}: state store`)
 
-  // RPC surface for the Web panel (Plugins page bundle configuration slot).
-  ctx.provide('bailianRouter', createService(ctx, router, store))
+  // RPC surface for the Web panel. The binding marks this Service in source
+  // (typertRemote + prototype markers) so the Gateway resolves it without a
+  // generated `./typert` artifact.
+  provideRemoteService(ctx, createService(ctx, router, store))
 
 
   // First-install pool bootstrap and periodic refresh (local state only; no
