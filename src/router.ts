@@ -17,8 +17,9 @@ import {
   DEFAULT_BASE_URL, DEFAULT_CONTEXT_WINDOW, inferVision, PROVIDER, VIRTUAL_MODEL,
 } from './catalog.js'
 import type { TaskType } from './catalog.js'
-import { thinkingDispatch } from './classify.js'
-import type { ThinkingDispatch } from './classify.js'
+import { effortToReasoningEffort, thinkingDispatch } from './classify.js'
+import type { ThinkingDispatch, ThinkingEffort } from './classify.js'
+import { thinkingStyleFor } from './vendors.js'
 import { resolveOptions } from './config.js'
 import type { Config, RouterOptions } from './config.js'
 import { discoverConnection } from './connection.js'
@@ -471,7 +472,7 @@ export class Router {
       ...(options.signal ? { signal: options.signal } : {}),
     })
     const tools = serializeTools(options.tools)
-    const thinking = this.thinkingFor(model, effort)
+    const thinking = this.thinkingFor(model, effort, snapshot)
     const request = {
       model,
       messages,
@@ -482,8 +483,9 @@ export class Router {
       ...(thinking === undefined
         ? {}
         : {
-          enableThinking: thinking.enableThinking,
+          ...(thinking.enableThinking === undefined ? {} : { enableThinking: thinking.enableThinking }),
           ...(thinking.thinkingBudget === undefined ? {} : { thinkingBudget: thinking.thinkingBudget }),
+          ...(thinking.reasoningEffort === undefined ? {} : { reasoningEffort: thinking.reasoningEffort }),
         }),
     }
     try {
@@ -542,10 +544,14 @@ export class Router {
    * to the Bailian `enable_thinking` switch — never to `reasoning_effort`. A
    * model that previously rejected thinking parameters is left untouched.
    */
-  private thinkingFor(model: string, effort: string | undefined): ThinkingDispatch | undefined {
+  private thinkingFor(model: string, effort: string | undefined, snapshot: RouterSnapshot): ThinkingDispatch | undefined {
     if (this.store.effortUnsupported(model)) return undefined
-    if (effort === 'off' || effort === 'low' || effort === 'medium' || effort === 'high' || effort === 'max') {
-      return thinkingDispatch(model, effort)
+    if (effort !== 'off' && effort !== 'low' && effort !== 'medium' && effort !== 'high' && effort !== 'max') return undefined
+    const style = thinkingStyleFor(snapshot.options.vendor, snapshot.options.baseURL)
+    if (style === 'enable_thinking') return thinkingDispatch(model, effort as ThinkingEffort)
+    if (style === 'reasoning_effort') {
+      const reasoningEffort = effortToReasoningEffort(effort as ThinkingEffort)
+      return reasoningEffort === undefined ? undefined : { reasoningEffort }
     }
     return undefined
   }

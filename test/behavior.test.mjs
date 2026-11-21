@@ -132,6 +132,7 @@ const stateDir = await mkdtemp(join(tmpdir(), 'bar-state-'))
 
 const baseConfig = {
   baseURL,
+  vendor: 'bailian',
   apiKeyEnv: 'BAILIAN_API_KEY',
   enableDecision: true,
   decisionModel: 'deepseek-v4.1-flash-1017',

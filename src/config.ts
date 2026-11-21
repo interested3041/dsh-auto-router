@@ -45,10 +45,14 @@ export interface SavedAccount {
   apiKeyEnv?: string
 }
 
+import { vendorKeyRefs, type VendorId } from './vendors.js'
+
 /** Live plugin configuration; every value is read with `.get()`. */
 export interface Config {
-  /** Bailian compatible-mode endpoint base. */
+  /** OpenAI-compatible endpoint base (any supported vendor). */
   baseURL: Volatile<string>
+  /** Vendor preset; `auto` detects from `baseURL`. */
+  vendor: Volatile<'auto' | VendorId>
   /** Credential reference for the Bailian API key (falls back to the process environment). */
   apiKeyEnv: Volatile<string>
   /** Whether the decision model runs before routing (false = pure heuristic routing). */
@@ -141,6 +145,7 @@ const accountSchema = z.object({
 /** Loader-validated plugin configuration schema. */
 export const Config = z.object({
   baseURL: z.string().default(DEFAULT_BASE_URL).volatile(),
+  vendor: z.union(['auto', 'bailian', 'siliconflow', 'openrouter', 'volcengine', 'zhipu', 'moonshot', 'deepseek', 'generic'] as const).default('auto').volatile(),
   apiKeyEnv: z.string().role('credential-ref').default(DEFAULT_API_KEY_ENV).volatile(),
   enableDecision: z.boolean().default(true).volatile(),
   decisionModel: z.string().default(DEFAULT_DECISION_MODEL).volatile(),
@@ -178,6 +183,7 @@ export const Config = z.object({
 /** Detached, validated settings snapshot captured per request/operation. */
 export interface RouterOptions {
   readonly baseURL: string
+  readonly vendor: 'auto' | VendorId
   readonly apiKeyEnv: string
   readonly enableDecision: boolean
   readonly decisionModel: string
@@ -303,10 +309,13 @@ export function resolveOptions(config: Config): RouterOptions {
     accounts.push({ id, name, baseURL: base, ...(apiKey === undefined ? {} : { apiKey }), ...(ref === undefined ? {} : { apiKeyEnv: ref }) })
   }
   const activeAccountId = String(plain(config.activeAccountId) ?? '').trim()
+  const vendor = (['auto', 'bailian', 'siliconflow', 'openrouter', 'volcengine', 'zhipu', 'moonshot', 'deepseek', 'generic'] as const)
+    .find(value => value === plain(config.vendor)) ?? 'auto'
   return {
     baseURL,
+    vendor,
     apiKeyEnv,
-    apiKeyRefs: [...new Set([apiKeyEnv, ...API_KEY_REFS])],
+    apiKeyRefs: [...new Set([apiKeyEnv, ...vendorKeyRefs(vendor, baseURL), ...API_KEY_REFS])],
     enableDecision: plain(config.enableDecision) !== false,
     decisionModel: String(plain(config.decisionModel) || DEFAULT_DECISION_MODEL).trim(),
     decisionTimeoutMs: positiveInt(Number(plain(config.decisionTimeoutMs)), 12000, 1000),

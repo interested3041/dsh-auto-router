@@ -207,6 +207,7 @@
             balanceWindow: String(next.config?.balanceWindow ?? 6),
             balanceBand: String(next.config?.balanceBand ?? 0),
             thinkingEffort: next.config?.thinkingEffort ?? 'auto',
+            vendor: next.config?.vendor ?? 'auto',
             enableMediaRouting: next.config?.enableMediaRouting !== false,
           })
         }, [])
@@ -301,6 +302,7 @@
             balanceWindow: Number(draft.balanceWindow ?? cfg.balanceWindow ?? 6),
             balanceBand: Number(draft.balanceBand ?? cfg.balanceBand ?? 0),
             thinkingEffort: draft.thinkingEffort ?? cfg.thinkingEffort ?? 'auto',
+            vendor: draft.vendor ?? cfg.vendor ?? 'auto',
             enableMediaRouting: draft.enableMediaRouting !== false,
             includeSpecialEndpoints: draft.includeSpecialEndpoints === true,
             excludeModels: String(draft.excludeModelsText ?? (cfg.excludeModels ?? []).join('\n'))
@@ -719,6 +721,23 @@
               )),
             field(T('轮转候选个数', 'Rotation window'), draft.balanceWindow, (v: string) => setDraft({ ...draft, balanceWindow: v })),
             field(T('分数保护带(0=关闭)', 'Score guard band (0 = off)'), draft.balanceBand, (v: string) => setDraft({ ...draft, balanceBand: v })),
+            h('div', { className: 'bar-field' },
+              h('label', null, T('厂商预设', 'Vendor preset')),
+              h('select', {
+                className: 'bar-input',
+                value: draft.vendor ?? 'auto',
+                onChange: (e: any) => setDraft({ ...draft, vendor: e.target.value }),
+              },
+                h('option', { value: 'auto' }, T('自动(按接口地址识别)', 'Auto (detect from endpoint)')),
+                h('option', { value: 'bailian' }, T('阿里云百炼', 'Aliyun Bailian')),
+                h('option', { value: 'siliconflow' }, T('硅基流动', 'SiliconFlow')),
+                h('option', { value: 'openrouter' }, 'OpenRouter'),
+                h('option', { value: 'volcengine' }, T('火山方舟', 'Volcengine Ark')),
+                h('option', { value: 'zhipu' }, T('智谱开放平台', 'Zhipu')),
+                h('option', { value: 'moonshot' }, 'Moonshot'),
+                h('option', { value: 'deepseek' }, T('DeepSeek 官方', 'DeepSeek official')),
+                h('option', { value: 'generic' }, T('通用 OpenAI 兼容', 'Generic OpenAI-compatible')),
+              )),
             h('div', { className: 'bar-field' },
               h('label', null, T('思考档位策略', 'Thinking effort policy')),
               h('select', {

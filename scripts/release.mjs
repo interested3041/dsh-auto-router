@@ -45,7 +45,7 @@ const payload = JSON.stringify({
   prerelease: false,
 })
 
-const response = await fetch('https://api.github.com/repos/interested3041/dsh-bailian-auto-router/releases', {
+const response = await fetch('https://api.github.com/repos/interested3041/dsh-auto-router/releases', {
   method: 'POST',
   headers: {
     authorization: `Bearer ${token}`,

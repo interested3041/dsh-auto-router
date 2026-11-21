@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.5.0] - 2026-11-21
+
+### 新增
+
+- **多厂商适配(去百炼绑定)**:新增 `src/vendors.ts` 厂商预设模块,支持「单 key 多模型」的 OpenAI 兼容平台:
+  阿里云百炼(默认)、硅基流动、OpenRouter、火山方舟、智谱开放平台、Moonshot、DeepSeek 官方、通用 OpenAI 兼容网关。
+  按接口地址自动识别厂商(`vendor: auto`),也可在面板「厂商预设」手动指定。
+- **按厂商分派思考参数**:百炼/硅基/智谱走 `enable_thinking`(+`thinking_budget`);
+  OpenRouter/火山/DeepSeek/通用走 `reasoning_effort`(`max` 钳到 `high`,`off` 不下发);Moonshot 不下发思考参数。
+  缺省 `vendor` 回落 `auto`(按 baseURL 识别),旧配置/旧快照不受影响。
+- **连接发现通用化**:`connection.ts` 不再只认阿里云端点,任何已知厂商或形如 `/v1`、`/api/v3` 的通用网关都可被自动沿用。
+- **凭据 refs 扩到全厂商**:配置解析按厂商前置对应 key 环境变量,全局回退列表覆盖 11 个常见变量。
+- **面板「厂商预设」下拉** + 配置/ RPC 透传 `vendor` 字段。
+- 新增 `test/vendors.test.mjs`(31 断言);全量测试 341 条。
+
+### 变更
+
+- **插件改名 `dsh-bailian-auto-router` → `dsh-auto-router`**(package / 仓库 / 安装目录 / junction 同步)。
+  虚拟模型 id 保留 `bailian-auto` 以兼容已选模型;显示名改中性「智能路由 Auto Router」。
+- README 重写为多厂商定位:支持平台表、适配范围、路线图更新(多厂商/分类面板/额度/自检标记为已落地)。
+
 ## [0.4.0] - 2026-11-19
 
 ### 修复(紧急)

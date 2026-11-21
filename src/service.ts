@@ -100,6 +100,7 @@ export interface ConfigView {
   balanceBand: number
   balanceWindowHours: number
   thinkingEffort: 'auto' | 'off' | 'low' | 'medium' | 'high' | 'max'
+  vendor: 'auto' | 'bailian' | 'siliconflow' | 'openrouter' | 'volcengine' | 'zhipu' | 'moonshot' | 'deepseek' | 'generic'
   enableMediaRouting: boolean
   stickySession: boolean
   sessionTurnLimit: number
@@ -244,6 +245,13 @@ function sanitizePatch(patch: unknown): Record<string, unknown> {
       throw new Error(`thinkingEffort must be one of ${allowed.join(', ')}`)
     }
     out.thinkingEffort = input.thinkingEffort
+  }
+  if (input.vendor !== undefined) {
+    const allowed = ['auto', 'bailian', 'siliconflow', 'openrouter', 'volcengine', 'zhipu', 'moonshot', 'deepseek', 'generic'] as const
+    if (!(allowed as readonly unknown[]).includes(input.vendor)) {
+      throw new Error(`vendor must be one of ${allowed.join(', ')}`)
+    }
+    out.vendor = input.vendor
   }
   if (input.modelLimits !== undefined) {
     const limits = input.modelLimits
@@ -432,6 +440,7 @@ async function stateView(ctx: HostContext, router: Router, store: RouterStore): 
       balanceBand: options.balanceBand,
       balanceWindowHours: options.balanceWindowHours,
       thinkingEffort: options.thinkingEffort,
+      vendor: options.vendor,
       enableMediaRouting: options.enableMediaRouting,
       stickySession: options.stickySession,
       sessionTurnLimit: options.sessionTurnLimit,

@@ -1,16 +1,16 @@
 <div align="center">
 
-# dsh-bailian-auto-router
+# dsh-auto-router
 
-**百炼智能路由 · 一个 API key，自动帮你挑模型**
+**多厂商智能路由 · 一个 API key，自动帮你挑模型**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![DSH](https://img.shields.io/badge/DeepSeek%20Harness-%E2%89%A50.2.0-1f6feb)](https://github.com/deepseek-ai/deepseek-harness)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A520-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 
-在 DSH 的模型列表里选 **`bailian-auto`（百炼智能路由）**，
-插件就用你的百炼账号，按问题类型自动挑最合适的模型来回答，不用你手动切来切去。
+在 DSH 的模型列表里选 **`bailian-auto`（智能路由 Auto Router）**，
+插件就用你的账号（默认百炼，也支持硅基流动 / OpenRouter / 火山方舟 / 智谱等），按问题类型自动挑最合适的模型来回答，不用你手动切来切去。
 
 </div>
 
@@ -18,7 +18,7 @@
 
 ## 这个插件是干什么的
 
-你有一个阿里云百炼的 API key，里面能访问上百个模型：写作的、写代码的、推理的、画图的、语音的……
+你有一个 API key（百炼、硅基流动、OpenRouter、火山方舟、智谱……任选），里面能访问很多模型：写作的、写代码的、推理的、画图的、语音的……
 平时你得自己猜「这个问题该用哪个模型」，很麻烦，还容易盯着一个贵的模型一直用。
 
 装上这个插件后，DSH 的模型列表里会多出一个 **`bailian-auto`**。选它之后，你正常提问就行：
@@ -29,13 +29,28 @@
 - 某个模型额度用完 / 报错 / 限流，自动悄悄换下一个，你不用管；
 - 同一类问题会在几个差不多好的模型之间轮流用，不会盯着一个最强的薅；用量相近时优先用更强的那个。
 
-**全程只用你这一个百炼 API key 下的模型，不会跳到别的平台、别的 key。**
+**全程只用你这一个 API key 下的模型，不会跳到别的 key、别的账号。**
 
 ## 适配范围（重要）
 
-- **现在适配**：**阿里云百炼（DashScope）** 的 OpenAI 兼容端点。一个百炼 API key 能访问的模型，它都能自动识别、分类、路由。
-- **目标**：做成**通用多模型路由**——只要是「一个 API key 下能访问多个模型」的 OpenAI 兼容平台（百炼、硅基流动、OpenRouter、火山方舟、智谱开放平台等），都能用这个插件，**不绑定百炼**。多厂商适配在路线图中（见下文）。
+- **现在适配**：任何「一个 API key 下能访问多个模型」的 OpenAI 兼容平台——阿里云百炼（默认）、硅基流动、OpenRouter、火山方舟、智谱开放平台、Moonshot、DeepSeek 官方，以及其它通用 OpenAI 兼容网关。**不绑定百炼**。
+- **自动识别**：插件按你填的接口地址自动认出是哪家平台（也可在面板「厂商预设」里手动指定），并套用该平台正确的思考参数写法。
 - **不会凭空造模型**：插件只认你账号 `GET /models` 真实返回的模型。账号里没有的（比如 gpt）不会出现，也不会被路由到。
+
+## 支持的平台
+
+| 平台 | 默认接口地址 | 凭据环境变量 | 思考参数写法 |
+| --- | --- | --- | --- |
+| 阿里云百炼（默认） | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `BAILIAN_API_KEY` / `DASHSCOPE_API_KEY` / `ALIYUN_API_KEY` | `enable_thinking` + `thinking_budget` |
+| 硅基流动 | `https://api.siliconflow.cn/v1` | `SILICONFLOW_API_KEY` | `enable_thinking` |
+| OpenRouter | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | `reasoning_effort` |
+| 火山方舟 | `https://ark.cn-beijing.volces.com/api/v3` | `ARK_API_KEY` / `VOLCENGINE_API_KEY` | `reasoning_effort` |
+| 智谱开放平台 | `https://open.bigmodel.cn/api/paas/v4` | `ZHIPU_API_KEY` / `BIGMODEL_API_KEY` | `enable_thinking` |
+| Moonshot | `https://api.moonshot.cn/v1` | `MOONSHOT_API_KEY` | 不下发思考参数 |
+| DeepSeek 官方 | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` | `reasoning_effort` |
+| 通用 OpenAI 兼容 | 你自己的网关地址 | 你配置的那个 | `reasoning_effort` |
+
+换平台只需改接口地址 + 对应 key（或在面板选厂商预设），其余路由 / 均衡 / 额度 / 自检逻辑完全通用。
 
 ## 使用前提
 
@@ -78,13 +93,13 @@
 
 ```sh
 # 本地目录（开发/自用，link 方式）
-dsh plugin --profile web add link:/path/to/dsh-bailian-auto-router
+dsh plugin --profile web add link:/path/to/dsh-auto-router
 
 # GitHub 仓库
-dsh plugin --profile web add github:interested3041/dsh-bailian-auto-router
+dsh plugin --profile web add github:interested3041/dsh-auto-router
 
 # 本地已 clone 的目录
-dsh plugin --profile web add /path/to/dsh-bailian-auto-router
+dsh plugin --profile web add /path/to/dsh-auto-router
 ```
 
 安装后**重启** `dsh web` / Desktop（宿主插件的新模块版本需要重启加载）。
@@ -146,22 +161,22 @@ dsh plugin --profile web add /path/to/dsh-bailian-auto-router
 
 > 说明：面板里的「冷却状态」是插件根据失败/限流做的**本地启发式判断**，不是百炼后台的真实剩余配额。
 
-## 路线图（规划中，尚未实现）
+## 路线图
 
-以下是后续版本计划，**当前 0.3.0 还没有**，先写出来让你知道方向：
+**已落地**（0.4.0 / 0.5.0）：分类展开面板、每模型额度上限、一键完整性自检、多厂商适配（见上表）。
 
-- **分类展开面板**：按「图像 / 语音 / 推理 / 代码 / 写作 / 翻译…」分类，点开分类才展开该类模型——上百个模型不再一屏平铺，分好类更清晰；
-- **每模型额度上限**：给单个模型设用量上限，用超了自动停用并路由下一个；不设就是自动均衡；
-- **一键完整性自检**：检测插件在本机能不能正常用（API key / 端点 / 模型池 / 客户端脚本 / 状态文件），并自动修复或配置，确保适配；
-- **多厂商适配**：硅基流动 / OpenRouter / 火山方舟 / 智谱等「一个 key 多模型」的 OpenAI 兼容平台；
-- **dshgo 手机版**：移植到移动端 DSH（dshgo），独立仓库维护，路由逻辑与本插件保持一致。
+**后续计划**（尚未实现）：
+
+- **dshgo 手机版**：移植到移动端 DSH（dshgo，engine 0.2.2-rc.1），独立仓库 `dsh-auto-router-dshgo` 维护，路由逻辑与本插件保持一致；
+- **更多厂商预设**：按社区反馈补充端点识别与思考参数写法；
+- **路由可解释性**：面板展示每次决策的候选打分与降级原因明细。
 
 ## 测试
 
 ```sh
 npm install
 npm run build      # tsc（宿主 + 客户端两套 tsconfig）+ 校验 client.js 为经典脚本（不含 ESM 语法）
-npm test           # 冒烟 + 分类/排序 + 路由 + 换账号 + 多账号管理 + 均衡/档位/媒体/视频闸门/会话粘 + 额度上限，共 310 条断言
+npm test           # 冒烟 + 分类/排序 + 路由 + 换账号 + 多账号管理 + 多厂商预设 + 均衡/档位/媒体/视频闸门/会话粘 + 额度上限，共 341 条断言
 npm run test:live  # 用本机真实凭据与端点跑通完整链路（会计费，按需）
 ```
 

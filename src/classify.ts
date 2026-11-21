@@ -221,12 +221,28 @@ export function isSnapshot(id: string): boolean {
 /** Reasoning-effort ladder the harness hands the router (after `auto` is resolved). */
 export type ThinkingEffort = 'off' | 'low' | 'medium' | 'high' | 'max'
 
-/** Wire thinking parameters for one Bailian OpenAI-compatible model. */
+/** Wire thinking parameters for one OpenAI-compatible model. */
 export interface ThinkingDispatch {
-  /** The `enable_thinking` boolean sent to the provider. */
-  enableThinking: boolean
+  /** The `enable_thinking` boolean sent to the provider (Bailian-style vendors). */
+  enableThinking?: boolean
   /** The `thinking_budget` cap sent alongside `enable_thinking: true`. */
   thinkingBudget?: number
+  /** The `reasoning_effort` level sent to reasoning-effort-style vendors. */
+  reasoningEffort?: 'low' | 'medium' | 'high'
+}
+
+/**
+ * Map a resolved effort onto a valid OpenAI `reasoning_effort` value.
+ * `off` sends nothing; `max` clamps to `high` (there is no `max` effort value).
+ */
+export function effortToReasoningEffort(effort: ThinkingEffort | undefined): 'low' | 'medium' | 'high' | undefined {
+  switch (effort) {
+    case 'low': return 'low'
+    case 'medium': return 'medium'
+    case 'high':
+    case 'max': return 'high'
+    default: return undefined
+  }
 }
 
 /**

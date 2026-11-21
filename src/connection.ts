@@ -12,8 +12,9 @@
  * and an explicit value in this plugin's Config always wins.
  */
 import type { ConfigEditorLike, HostContext } from './context.js'
+import { isRoutableEndpoint } from './vendors.js'
 
-/** One discovered Aliyun-compatible connection. */
+/** One discovered OpenAI-compatible connection (any supported vendor). */
 export interface DiscoveredConnection {
   /** Profile plugin entry that supplies it, for display. */
   entryId: string
@@ -22,9 +23,6 @@ export interface DiscoveredConnection {
   baseURL: string
   apiKeyEnv?: string
 }
-
-/** Endpoints that belong to Aliyun's model service. */
-const ALIYUN_ENDPOINT = /(?:dashscope\.aliyuncs\.com|maas\.aliyuncs\.com|\.aliyuncs\.com\/compatible-mode)/i
 
 /** Cache window: the profile rarely changes while a session runs. */
 const CACHE_MS = 60_000
@@ -44,7 +42,7 @@ function connectionsOf(entryId: string, config: Record<string, unknown>): Discov
     for (const [providerId, raw] of Object.entries(providers)) {
       const profile = asRecord(raw)
       const baseURL = typeof profile?.baseURL === 'string' ? profile.baseURL : undefined
-      if (baseURL === undefined || !ALIYUN_ENDPOINT.test(baseURL)) continue
+      if (baseURL === undefined || !isRoutableEndpoint(baseURL)) continue
       found.push({
         entryId,
         providerId,
@@ -55,7 +53,7 @@ function connectionsOf(entryId: string, config: Record<string, unknown>): Discov
   }
   // A flat harness-owned provider profile (for example a dedicated Bailian row).
   const baseURL = typeof config.baseURL === 'string' ? config.baseURL : undefined
-  if (baseURL !== undefined && ALIYUN_ENDPOINT.test(baseURL)) {
+  if (baseURL !== undefined && isRoutableEndpoint(baseURL)) {
     found.push({
       entryId,
       providerId: entryId,

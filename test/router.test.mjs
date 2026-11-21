@@ -60,6 +60,7 @@ const mockCtx = {
 function baseConfig(overrides = {}) {
   return {
     baseURL,
+    vendor: 'bailian',
     apiKeyEnv: 'DASHSCOPE_API_KEY',
     enableDecision: true,
     decisionModel: 'deepseek-v4.1-flash',
