@@ -11,6 +11,25 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 
+# Capture the host's own launch spec BEFORE stopping it: its CLI args (such as
+# --user-data-dir) and DSH_HOME (derived from the host child's profile path).
+# Without this, restarting the bare exe would open the DEFAULT profile and
+# collide with the other DSH version.
+$mainProc = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+  $_.ExecutablePath -eq $HostExe -and $_.CommandLine -notmatch '--type=' -and $_.CommandLine -notmatch '--expose-internals'
+} | Select-Object -First 1
+$hostArgs = ''
+if ($mainProc -and $mainProc.CommandLine) {
+  $m = [regex]::Match($mainProc.CommandLine, '^"[^"]+"\s*(.*)$')
+  if ($m.Success) { $hostArgs = $m.Groups[1].Value.Trim() }
+}
+$dshHome = $null
+$hostChild = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match 'dsh-desktop-host' } | Select-Object -First 1
+if ($hostChild -and $hostChild.CommandLine) {
+  $pm = [regex]::Match($hostChild.CommandLine, '([A-Za-z]:\\[^"\s]*?\\profiles\\[^"\s]+)')
+  if ($pm.Success) { $dshHome = Split-Path (Split-Path $pm.Groups[1].Value -Parent) -Parent }
+}
+
 # Only this host's processes are touched. Other DSH versions the user runs
 # alongside (low/high) must never be stopped or restarted here.
 if (-not $SkipStop) {
@@ -20,10 +39,22 @@ if (-not $SkipStop) {
     $name = [System.IO.Path]::GetFileNameWithoutExtension($HostExe)
     $hostProcs = Get-Process -Name $name -ErrorAction SilentlyContinue
   }
-  $hostProcs | Stop-Process -Force -Confirm:$false
-  Start-Sleep -Seconds 3
+  # Graceful first: lets DSH flush the in-flight conversation to disk.
+  foreach ($proc in $hostProcs) { [void]$proc.CloseMainWindow() }
+  $deadline = (Get-Date).AddSeconds(20)
+  while ((Get-Date) -lt $deadline) {
+    $left = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $HostExe }
+    if (-not $left) { break }
+    Start-Sleep -Seconds 1
+  }
   $left = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $HostExe }
-  if ($left) { throw '本次宿主未能全部退出, 已中止部署' }
+  if ($left) {
+    Write-Host '==> 优雅关闭超时, 强制结束本次宿主'
+    $left | Stop-Process -Force -Confirm:$false
+  }
+  Start-Sleep -Seconds 3
+  $still = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $HostExe }
+  if ($still) { throw '本次宿主未能全部退出, 已中止部署' }
 }
 
 Write-Host "==> 部署到 $InstallDir"
@@ -41,8 +72,12 @@ $libCount = (Get-ChildItem -LiteralPath (Join-Path $InstallDir 'lib') -Filter *.
 Write-Host "==> 部署完成: version=$version, lib=$libCount js"
 
 if (-not $NoStart) {
-  Write-Host "==> 启动宿主: $HostExe"
-  Start-Process -FilePath $HostExe
+  # Restart the SAME host with its original args and DSH_HOME, so a second
+  # DSH version never boots into another version's profile.
+  if ($dshHome) { $env:DSH_HOME = $dshHome; Write-Host "==> DSH_HOME=$dshHome" }
+  Write-Host "==> 启动宿主: $HostExe $hostArgs"
+  if ($hostArgs) { Start-Process -FilePath $HostExe -ArgumentList $hostArgs }
+  else { Start-Process -FilePath $HostExe }
   Start-Sleep -Seconds 8
   $running = (Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $HostExe } | Measure-Object).Count
   Write-Host "==> 宿主进程数: $running"
