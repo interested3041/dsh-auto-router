@@ -164,10 +164,11 @@ dsh plugin --profile web add /path/to/dsh-auto-router
 ## 路线图
 
 **已落地**（0.4.0 / 0.5.0）：分类展开面板、每模型额度上限、一键完整性自检、多厂商适配（见上表）。
+**dshgo 移动端移植已发布**：独立仓库 [`dsh-auto-router-dshgo`](https://github.com/interested3041/dsh-auto-router-dshgo) v0.1.0（engine ≥0.2.2-rc.1），路由逻辑与本插件一致，真机适配进行中。
 
 **后续计划**（尚未实现）：
 
-- **dshgo 手机版**：移植到移动端 DSH（dshgo，engine 0.2.2-rc.1），独立仓库 `dsh-auto-router-dshgo` 维护，路由逻辑与本插件保持一致；
+- **dshgo 真机适配回传**：移动端剩余平台差异由 dshgo 自行适配修复后回传 `dsh-auto-router-dshgo` 迭代；
 - **更多厂商预设**：按社区反馈补充端点识别与思考参数写法；
 - **路由可解释性**：面板展示每次决策的候选打分与降级原因明细。
 
