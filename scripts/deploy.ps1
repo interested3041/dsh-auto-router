@@ -22,7 +22,7 @@ if (-not $SkipStop) {
 }
 
 Write-Host "==> 部署到 $InstallDir"
-foreach ($dir in @('lib', 'docs', 'locale', 'src', 'test')) {
+foreach ($dir in @('lib', 'docs', 'locale', 'src', 'test', 'scripts')) {
   $dst = Join-Path $InstallDir $dir
   if (-not (Test-Path -LiteralPath $dst)) { New-Item -ItemType Directory -Path $dst | Out-Null }
   Copy-Item -Path (Join-Path $root "$dir\*") -Destination $dst -Force -Recurse
