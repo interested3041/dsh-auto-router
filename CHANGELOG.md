@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.5.1] - 2026-11-22
+
+### 修复(紧急)
+
+- **组件激活失败 / ERR_MODULE_NOT_FOUND**:插件自带 `cordis.patch.yml` 的 `name` 仍写旧包名
+  `dsh-bailian-auto-router`,改名后 DSH 按它 import 旧包导致 `Cannot find package`,组件不激活、
+  配置面板(含选 API 账号界面)加载不出。现 `name` 改为 `dsh-auto-router`;
+  row `id` 保留 `bailian-auto-router` 以延续既有插件配置。
+- README 目录结构表移除已删除的 `src/rpc.ts` / `src/typert.host.ts`,补 `src/remote.ts` / `src/vendors.ts` / `src/home.ts`。
+
 ## [0.5.0] - 2026-11-21
 
 ### 新增
