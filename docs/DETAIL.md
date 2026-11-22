@@ -46,9 +46,9 @@
 
 ## 状态文件
 
-`~/.dsh/bailian-auto-router/state.json`（目录名沿用旧 id 以兼容既有状态；tmp + rename 原子写，单进程保证）。
+`~/.dsh/auto-router/state.json`（0.7.1 起自动迁移旧目录 `bailian-auto-router`；tmp + rename 原子写，单进程保证）。
 
 ## 测试
 
-`npm test` 共 341 条断言（冒烟 / 分类 / 路由 / 换账号 / 多账号 / 多厂商 / 行为）；
+`npm test` 共 440 条断言（冒烟 / 分类 / 路由 / 换账号 / 多账号 / 多厂商 / 行为 / 台账 / 身份 / 策略 / 额度连接 / 自检更新）；
 `npm run test:live` 用本机真实凭据跑完整链路（会计费，按需）。

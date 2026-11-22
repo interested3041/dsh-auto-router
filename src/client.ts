@@ -213,6 +213,8 @@
         const [notice, setNotice] = useState<string | null>(null)
         const [selfCheck, setSelfCheck] = useState<any>(null)
         const [acctForm, setAcctForm] = useState<any>({ id: '', name: '', baseURL: '', apiKey: '', apiKeyEnv: '' })
+        const [renKey, setRenKey] = useState<string | null>(null)
+        const [renVal, setRenVal] = useState('')
         const [tab, setTab] = useState<'account' | 'route' | 'pool' | 'log'>('account')
         const show = (name: string) => tab === name
         const [upd, setUpd] = useState<any>(null)
@@ -420,6 +422,27 @@
           else current[id] = entry
           void mutate(() => remote.updateConfig({ modelLimits: current }), T('额度上限已更新', 'Limit updated'))
         }
+        /** 0.7.1: caps are edited in 万 (10k) tokens; storage stays raw tokens. */
+        const wanOf = (v?: number): string => (typeof v === 'number' && v > 0 ? String(Math.round(v / 10_000)) : '')
+        const setLimitWan = (id: string, raw: string) => {
+          const n = Number(raw)
+          setLimit(id, 'maxTokens', raw.trim() === '' || !Number.isFinite(n) || n < 1 ? '' : String(Math.round(n * 10_000)))
+        }
+        const VENDOR_LABELS: Record<string, string> = {
+          bailian: T('阿里云百炼', 'Aliyun Bailian'), siliconflow: T('硅基流动', 'SiliconFlow'), openrouter: 'OpenRouter',
+          volcengine: T('火山方舟', 'Volcengine'), zhipu: T('智谱', 'Zhipu'), moonshot: 'Moonshot', deepseek: 'DeepSeek',
+          generic: T('通用', 'Generic'), auto: T('自动', 'Auto'),
+        }
+        const connKey = (c: any): string => `${c.id}|${c.providerId}`
+        const connLabel = (c: any): string => (cfg?.connectionNames ?? {})[connKey(c)]
+          ?? `${VENDOR_LABELS[c.providerId] ?? c.providerId} · ${c.credentialRef ?? T('默认凭据', 'default credential')}`
+        const saveConnName = (c: any) => {
+          const names = { ...(cfg?.connectionNames ?? {}) }
+          if (renVal.trim() !== '') names[connKey(c)] = renVal.trim()
+          else delete names[connKey(c)]
+          setRenKey(null)
+          void mutate(() => remote.updateConfig({ connectionNames: names }), T('连接名称已保存', 'Connection name saved'))
+        }
         const saveAccount = () => {
           const name = String(acctForm.name ?? '').trim()
           const baseURL = String(acctForm.baseURL ?? '').trim()
@@ -480,7 +503,7 @@
                 options: [
                   { value: '', label: T('默认接口 / 自动沿用', 'Default endpoint / auto-adopt') },
                   ...accounts.map((a: any) => ({ value: `acct:${a.id}`, label: a.name })),
-                  ...(state.connections ?? []).map((c: any) => ({ value: `conn:${c.id}|${c.providerId}`, label: c.providerId })),
+                  ...(state.connections ?? []).map((c: any) => ({ value: `conn:${c.id}|${c.providerId}`, label: connLabel(c) })),
                 ],
               }),
               h('span', { className: 'bar-muted', style: { fontSize: '11px' } }, T('切换后自动重新同步模型池;台账按 key 记忆,同接口可继承', 'Switching resyncs the pool; ledger is per-key, same endpoint can inherit')),
@@ -566,6 +589,39 @@
               h('div', { className: 'bar-btn bar-btn-primary', role: 'button', onClick: saveAccount }, acctForm.id ? T('保存修改', 'Save changes') : T('添加账号', 'Add account')),
               acctForm.id ? h('div', { className: 'bar-btn', role: 'button', onClick: resetAcctForm }, T('取消编辑', 'Cancel edit')) : null,
             ),
+          ),
+
+          // ---- discovered connections: rename / switch (0.7.1) ----
+          show('account') && (state.connections ?? []).length > 0 && h('div', { className: 'bar-card' },
+            h('h4', null, T('检测到的连接(可改中文名 / 切换)', 'Discovered connections (rename / switch)')),
+            h('div', { className: 'bar-muted', style: { fontSize: '11px' } }, T(
+              '「改名」设置你自己的中文名称,下拉与列表同步显示;「使用」切换该接口并重新同步模型池。同一接口多个 key 用名称区分。',
+              'Rename to your own label (shown in the dropdown and list); "Use" switches endpoint and resyncs the pool. Distinguish multiple keys on one endpoint by name.',
+            )),
+            h('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } },
+              ...(state.connections ?? []).map((c: any) => h('div', { key: connKey(c), className: 'bar-history-item' },
+                h('div', { className: 'bar-row' },
+                  h('strong', null, connLabel(c)),
+                  state.adopted && state.adopted.entryId === c.id && state.adopted.providerId === c.providerId ? h(Badge, { tone: 'ok', text: T('使用中', 'active') }) : null,
+                  h('span', { className: 'bar-muted bar-mono', style: { fontSize: '11px', wordBreak: 'break-all' } }, c.baseURL),
+                ),
+                h('div', { className: 'bar-row' },
+                  renKey === connKey(c) ? h('input', {
+                    className: 'bar-input', style: { width: '180px' }, value: renVal, placeholder: T('中文名称,如:主力key…', 'Custom name…'),
+                    onChange: (e: any) => setRenVal(e.target.value),
+                  }) : null,
+                  renKey === connKey(c)
+                    ? h('div', { className: 'bar-btn bar-btn-primary', role: 'button', onClick: () => saveConnName(c) }, T('保存', 'Save'))
+                    : h('div', {
+                      className: 'bar-btn', role: 'button',
+                      onClick: () => { setRenKey(connKey(c)); setRenVal((cfg?.connectionNames ?? {})[connKey(c)] ?? '') },
+                    }, T('改名', 'Rename')),
+                  h('div', {
+                    className: 'bar-btn', role: 'button',
+                    onClick: () => { setSelAcct(`conn:${connKey(c)}`); void mutate(() => remote.switchConnection(c.id, c.providerId), T('已切换连接并重新同步模型池', 'Connection switched and pool resynced')) },
+                  }, T('使用', 'Use')),
+                ),
+              ))),
           ),
 
           // ---- routing configuration ----
@@ -685,8 +741,15 @@
                 h('td', null, String(q?.calls ?? 0)),
                 h('td', { className: 'bar-muted' }, q?.lastFailCode ?? '—'),
                 h('td', null, h('div', { className: 'bar-row', style: { gap: '4px' } },
-                  h('input', { className: 'bar-input', style: { width: '88px' }, type: 'number', min: 1, placeholder: '1M', defaultValue: state.config?.modelLimits?.[id]?.maxTokens ?? '', onBlur: (e: any) => setLimit(id, 'maxTokens', e.target.value) }),
-                  h('div', { className: 'bar-btn', role: 'button', title: T('设 1M token 上限', 'Set 1M token cap'), onClick: () => setLimit(id, 'maxTokens', '1000000') }, '1M'))),
+                  h('input', {
+                    className: 'bar-input', key: `${id}-${state.config?.modelLimits?.[id]?.maxTokens ?? 0}`,
+                    style: { width: '64px' }, type: 'number', min: 1, placeholder: '100',
+                    title: T('单位:万 token;100 = 100 万;清空 = 不限', 'Unit: 10k tokens; 100 = 1M; blank = unlimited'),
+                    defaultValue: wanOf(state.config?.modelLimits?.[id]?.maxTokens),
+                    onBlur: (e: any) => setLimitWan(id, e.target.value),
+                  }),
+                  h('span', { className: 'bar-muted', style: { fontSize: '11px' } }, T('万', '×10k')),
+                  h('div', { className: 'bar-btn', role: 'button', title: T('设 1M(100万) token 上限', 'Set 1M token cap'), onClick: () => setLimit(id, 'maxTokens', '1000000') }, '1M'))),
                 h('td', null, available ? null : h('div', {
                   className: 'bar-btn', role: 'button',
                   onClick: () => void mutate(() => remote.resetQuota(id), T('已解除冷却: ', 'Cooldown cleared: ') + id),
@@ -720,7 +783,7 @@
                         h('th', null, T('连败', 'Fails')),
                         h('th', null, T('调用', 'Calls')),
                         h('th', null, T('错误', 'Error')),
-                        h('th', null, T('限额(tok)', 'Cap (tok)')),
+                        h('th', null, T('限额(万tok)', 'Cap (×10k tok)')),
                         h('th', null, ''),
                       )),
                       h('tbody', null, g.ids.slice(0, 300).map((id) => modelRow(id))),
@@ -741,8 +804,8 @@
               }, T('重置全部用量', 'Reset all usage')),
             ),
             h('div', { className: 'bar-muted' }, T(
-              '在上方模型池每行的「限额」框或下方表格直接填 token/次数上限,点「1M」一键设 100 万 token;达到上限自动路由下一个。清空=不限。无需手写 JSON。',
-              'Set a per-model cap in the pool row or the table below; "1M" sets a 1,000,000-token cap. Reaching it routes to the next model. Blank = unlimited. No JSON needed.',
+              '限额单位为「万 token」:填 100 = 100 万,点「1M」一键设 100 万;达到上限自动路由下一个,清空=不限。旧版误填的小数值(如 100)已自动按「万」迁移,不会再秒触发冷却。',
+              'Caps are in 10k tokens: 100 = 1M; "1M" sets a 1M cap. Reaching it routes to the next model; blank = unlimited. Legacy tiny raw values (e.g. 100) are auto-migrated as 10k units.',
             )),
             h('div', { style: { maxHeight: '200px', overflow: 'auto', marginTop: '4px' } },
               h('table', { className: 'bar-table' },
@@ -751,7 +814,7 @@
                   h('th', null, T('调用', 'Calls')),
                   h('th', null, T('token', 'Tokens')),
                   h('th', null, T('上限', 'Limit')),
-                  h('th', null, T('行内设置(次 / tok)', 'Inline cap (calls / tok)')),
+                  h('th', null, T('行内设置(次 / 万tok)', 'Inline cap (calls / ×10k tok)')),
                   h('th', null, T('本key桶/累计', 'Key bucket / total')),
                   h('th', null, T('状态', 'Status')),
                   h('th', null, ''),
@@ -763,15 +826,20 @@
                   const overTokens = typeof limit?.maxTokens === 'number' && usage.tokens >= limit.maxTokens
                   const over = overCalls || overTokens
                   const limitText = limit === undefined ? '—'
-                    : [typeof limit.maxCalls === 'number' ? `${limit.maxCalls} 次` : '', typeof limit.maxTokens === 'number' ? `${limit.maxTokens} tok` : ''].filter(Boolean).join(' / ')
+                    : [typeof limit.maxCalls === 'number' ? `${limit.maxCalls} 次` : '', typeof limit.maxTokens === 'number' ? `${Math.round(limit.maxTokens / 10_000)} 万tok` : ''].filter(Boolean).join(' / ')
                   return h('tr', { key: m.id },
                     h('td', { className: 'bar-mono', style: { wordBreak: 'break-all' } }, m.id),
                     h('td', null, String(usage.calls)),
                     h('td', null, String(usage.tokens)),
                     h('td', { className: 'bar-muted' }, limitText),
                     h('td', null, h('div', { className: 'bar-row', style: { gap: '4px' } },
-                      h('input', { className: 'bar-input', style: { width: '70px' }, type: 'number', min: 1, placeholder: '次', defaultValue: limit?.maxCalls ?? '', onBlur: (e: any) => setLimit(m.id, 'maxCalls', e.target.value) }),
-                      h('input', { className: 'bar-input', style: { width: '90px' }, type: 'number', min: 1, placeholder: 'tok', defaultValue: limit?.maxTokens ?? '', onBlur: (e: any) => setLimit(m.id, 'maxTokens', e.target.value) }))),
+                      h('input', { className: 'bar-input', key: `${m.id}-c-${limit?.maxCalls ?? 0}`, style: { width: '70px' }, type: 'number', min: 1, placeholder: '次', defaultValue: limit?.maxCalls ?? '', onBlur: (e: any) => setLimit(m.id, 'maxCalls', e.target.value) }),
+                      h('input', {
+                        className: 'bar-input', key: `${m.id}-t-${limit?.maxTokens ?? 0}`, style: { width: '70px' }, type: 'number', min: 1, placeholder: '100',
+                        title: T('单位:万 token;清空 = 不限', 'Unit: 10k tokens; blank = unlimited'),
+                        defaultValue: wanOf(limit?.maxTokens), onBlur: (e: any) => setLimitWan(m.id, e.target.value),
+                      }),
+                      h('span', { className: 'bar-muted', style: { fontSize: '11px' } }, T('万', '×10k')))),
                     h('td', { className: 'bar-muted bar-mono' }, `${m.bucketTokens ?? 0} / ${m.ledgerTokens ?? 0}`),
                     h('td', null, limit === undefined
                       ? h(Badge, { tone: 'none', text: T('未设限', 'unlimited') })
@@ -937,7 +1005,7 @@
             (state.history ?? []).length === 0
               ? h('div', { className: 'bar-muted' }, T(
                 '暂无记录;在会话中把模型切到「智能路由 Auto Router」发起对话后回到这里查看。',
-                'No records yet; pick the "bailian-auto" model in a session and come back.',
+                'No records yet; pick the "智能路由 Auto Router" model in a session and come back.',
               ))
               : h('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '360px', overflow: 'auto' } },
                 (state.history ?? []).map((r: any, i: number) => h('div', { className: 'bar-history-item', key: `${r.at}-${i}` },
@@ -1039,7 +1107,7 @@
           ctx.effect(() => () => { try { unmount?.() } catch (_e) { /* already gone */ } }, `${PACKAGE}: remote contribution`)
 
           ctx.slots.inject('settings.models.footer', () => ctx.slots.register({
-            name: 'settings.models.footer', id: 'bailian-auto-router-status', order: 50,
+            name: 'settings.models.footer', id: 'auto-router-status', order: 50,
           }, FooterCard))
 
           // Register the rich panel only when the Remote namespace really
