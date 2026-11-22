@@ -43,7 +43,7 @@ foreach ($dir in @('lib', 'docs', 'locale', 'src', 'test', 'scripts')) {
   if (-not (Test-Path -LiteralPath $dst)) { New-Item -ItemType Directory -Path $dst | Out-Null }
   Copy-Item -Path (Join-Path $from '*') -Destination $dst -Force -Recurse
 }
-foreach ($file in @('package.json', 'CHANGELOG.md', 'README.md')) {
+foreach ($file in @('package.json', 'CHANGELOG.md', 'README.md', 'cordis.patch.yml')) {
   $from = Join-Path $src $file
   if (Test-Path -LiteralPath $from) { Copy-Item -LiteralPath $from -Destination (Join-Path $InstallDir $file) -Force }
 }
