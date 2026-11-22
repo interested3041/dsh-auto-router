@@ -203,6 +203,19 @@ npm run test:live  # 用本机真实凭据与端点跑通完整链路（会计�
 | `src/home.ts` | DSH home 路径解析（移动端兜底） |
 | `src/client.ts` | Web 配置 + 状态面板（经典脚本 bundle） |
 
+## 更新与部署
+
+插件由 DSH 在启动时一次性加载并缓存模块身份，**不要边跑边覆盖安装目录**，否则会短暂出现
+`duplicate factory registration` / 模块解析失败之类报错。固定流程：
+
+1. 构建测试：`npm run build` + `npm test`；
+2. 一键部署：`powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1`
+   （脚本依次：停止 DSH NEXT / 经典版 → 覆盖 `lib/docs/locale/src/test` 与 `package.json/CHANGELOG/README`
+   → 启动 DSH NEXT → 打印版本与进程数）；
+3. 打开插件详情确认版本号、配置面板与「包含的组件」运行状态。
+
+只部署不重启用 `-SkipStop`；只停不启用 `-NoStart`；安装目录不同用 `-InstallDir` 覆盖。
+
 ## 已知限制
 
 - **语音合成/识别不可用**：本网关 HTTP 面未提供（`/audio/speech` 404、chat 带 `voice` 返回 400、omni 忽略 audio），这些端点只登记不路由；

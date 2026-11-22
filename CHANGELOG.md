@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.5.4] - 2026-11-22
+
+### 新增
+
+- **一键部署脚本 `scripts/deploy.ps1`**:固定「停 DSH 进程 → 覆盖安装目录 → 启动 DSH NEXT → 校验版本/进程数」
+  流程,避免运行中覆盖文件导致的 `duplicate factory registration` 与模块解析失败;支持
+  `-SkipStop` / `-NoStart` / `-InstallDir`。
+- README 增加「更新与部署」章节说明该流程。
+
 ## [0.5.3] - 2026-11-22
 
 ### 变更
