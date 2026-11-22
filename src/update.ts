@@ -80,8 +80,8 @@ export function applyUpdate(tag: string, repo: string = UPDATE_REPO): { started:
       '-Tag', tag, '-Repo', repo, '-InstallDir', dir, '-HostExe', process.execPath,
     ], { detached: true, stdio: 'ignore', windowsHide: true })
     child.unref()
-    return { started: true, message: `Updater started for v${tag}; the host will restart shortly.` }
+    return { started: true, message: `v${tag} 更新已启动:按「停→部署→启动→校验」执行,宿主稍后自动重启。` }
   } catch (error) {
-    return { started: false, message: String((error as Error)?.message ?? error) }
+    return { started: false, message: `更新启动失败:${String((error as Error)?.message ?? error)}` }
   }
 }
