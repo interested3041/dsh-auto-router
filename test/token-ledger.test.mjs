@@ -4,6 +4,7 @@ import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { RouterStore } from '../lib/store.js'
+import { historyForKey } from '../lib/store.js'
 
 let n = 0
 const ok = (name, fn) => { fn(); n++; console.log('ok   ', name) }
@@ -67,12 +68,21 @@ ok('keyHistory is recency ordered', () => {
 })
 
 ok('recordRoute keeps origin/strategy/keyId/tokens', () => {
-  store.recordRoute({ at: 1, task: 'general', modality: 'text', decisionSource: 'model', attempts: [], ok: true, origin: 'user', strategy: 'price', keyId: 'acct:a', tokens: 42 })
+  store.recordRoute({ at: 1, task: 'general', modality: 'text', decisionSource: 'model', attempts: [], ok: true, origin: 'user', strategy: 'price', keyId: 'acct:a', tokens: 42, inputTokens: 100, cacheReadTokens: 900 })
   const last = store.state.history.at(-1)
   assert.equal(last.origin, 'user')
   assert.equal(last.strategy, 'price')
   assert.equal(last.keyId, 'acct:a')
   assert.equal(last.tokens, 42)
+  assert.equal(last.inputTokens, 100)
+  assert.equal(last.cacheReadTokens, 900)
+})
+
+ok('historyForKey hides other keys decisions', () => {
+  store.recordRoute({ at: 2, task: 'image', modality: 'image', decisionSource: 'model', attempts: [], ok: true, keyId: 'acct:b', tokens: 7 })
+  assert.deepEqual(historyForKey(store.state.history, 'acct:a').map(row => row.keyId), ['acct:a'])
+  assert.deepEqual(historyForKey(store.state.history, 'acct:b').map(row => row.keyId), ['acct:b'])
+  assert.equal(historyForKey(store.state.history, 'acct:missing').length, 0)
 })
 
 ok('ledger survives recordUsage (strategy switch does not reset)', () => {

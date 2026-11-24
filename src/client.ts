@@ -126,10 +126,12 @@
 .bar-input, .bar-textarea { background:var(--dsw-alias-bg-layer-2); color:var(--dsw-alias-label-primary); border:1px solid var(--dsw-alias-border-l1); border-radius:6px; padding:5px 8px; font-size:12px; font-family:inherit; box-sizing:border-box; width:100%; }
 .bar-input:focus, .bar-textarea:focus { outline:1px solid var(--dsw-alias-brand-primary); }
 .bar-textarea { min-height:64px; resize:vertical; font-family:ui-monospace, Consolas, monospace; }
-.bar-btn { background:var(--dsw-alias-bg-layer-2); color:var(--dsw-alias-label-primary); border:1px solid var(--dsw-alias-border-l2); border-radius:6px; padding:5px 12px; font-size:12px; cursor:pointer; user-select:none; }
+.bar-btn { background:var(--dsw-alias-bg-layer-2); color:var(--dsw-alias-label-primary); border:1px solid var(--dsw-alias-border-l2); border-radius:6px; padding:5px 12px; font-size:12px; font-family:inherit; cursor:pointer; user-select:none; }
 .bar-btn:hover { border-color:var(--dsw-alias-brand-primary); color:var(--dsw-alias-brand-primary); }
 .bar-btn-primary { background:var(--dsw-alias-brand-primary); border-color:var(--dsw-alias-brand-primary); color:#fff; }
 .bar-btn-primary:hover { color:#fff; opacity:.9; }
+.bar-btn-danger { color:#c0392b; border-color:rgba(192,57,43,.55); }
+.bar-btn-danger:hover { color:#fff; background:#c0392b; border-color:#c0392b; }
 .bar-badge { display:inline-block; padding:1px 8px; border-radius:999px; font-size:11px; border:1px solid var(--dsw-alias-border-l2); color:var(--dsw-alias-label-secondary); }
 .bar-badge-ok { color:var(--dsw-alias-state-success-primary); border-color:var(--dsw-alias-state-success-primary); }
 .bar-badge-warn { color:var(--dsw-alias-state-warn-primary); border-color:var(--dsw-alias-state-warn-primary); }
@@ -140,6 +142,9 @@
 .bar-mono { font-family:ui-monospace, Consolas, monospace; }
 .bar-error { color:var(--dsw-alias-state-error-primary); font-size:12px; white-space:pre-wrap; }
 .bar-ok { color:var(--dsw-alias-state-success-primary); font-size:12px; }
+.bar-toast { position:fixed; left:50%; top:78px; transform:translateX(-50%); z-index:9999; max-width:70vw; padding:8px 14px; border-radius:8px; background:var(--dsw-alias-bg-layer-2); border:1px solid var(--dsw-alias-border-l1); box-shadow:0 8px 24px rgba(0,0,0,.18); font-size:12px; white-space:pre-wrap; cursor:pointer; }
+.bar-toast-ok { color:var(--dsw-alias-state-success-primary); }
+.bar-toast-err { color:var(--dsw-alias-state-error-primary); }
 .bar-history-item { border:1px solid var(--dsw-alias-border-l1); border-radius:8px; padding:8px 10px; display:flex; flex-direction:column; gap:4px; background:var(--dsw-alias-bg-layer-2); }
 .bar-check { display:flex; align-items:center; gap:6px; }
 .bar-footer-card { display:flex; align-items:center; gap:10px; border:1px solid var(--dsw-alias-border-l1); border-radius:10px; background:var(--dsw-alias-bg-layer-1); padding:10px 14px; font-size:12px; color:var(--dsw-alias-label-secondary); }
@@ -166,7 +171,7 @@
         // Same endpoint can host several keys: prefer the one whose credential
         // matches the live config, otherwise fall back to the first.
         const key = String(cfg?.apiKeyEnv ?? '')
-        const keyed = baseMatch.find((c: any) => key !== '' && String(c?.apiKeyEnv ?? '') === key)
+        const keyed = baseMatch.find((c: any) => key !== '' && String(c?.credentialRef ?? c?.apiKeyEnv ?? '') === key)
         const match = keyed ?? baseMatch[0]
         return { ...match, entryId: match.id }
       }
@@ -198,6 +203,15 @@
         const s = total % 60
         return m > 0 ? `${m}m${String(s).padStart(2, '0')}s` : `${s}s`
       }
+      /** Numeric semver-ish compare for the update card. */
+      const versionCmp = (a: string, b: string): number => {
+        const pa = String(a).replace(/^v/, '').split('.').map(x => parseInt(x, 10) || 0)
+        const pb = String(b).replace(/^v/, '').split('.').map(x => parseInt(x, 10) || 0)
+        for (let i = 0; i < 3; i += 1) {
+          if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) > (pb[i] ?? 0) ? 1 : -1
+        }
+        return 0
+      }
 
       function useRemote(ctx: any): BarRemoteApi | undefined {
         return useMemo(() => {
@@ -218,7 +232,7 @@
         const [q, setQ] = useState('')
         const cur = props.options.find(o => o.value === props.value)
         const list = props.options.filter(o => `${o.label} ${o.value}`.toLowerCase().includes(q.toLowerCase()))
-        return h('div', { style: { position: 'relative', minWidth: '200px', flex: '1 1 200px' } },
+        return h('div', { style: { position: 'relative', minWidth: '200px', width: '100%' } },
           h('input', {
             className: 'bar-input', placeholder: props.placeholder,
             value: open ? q : (cur ? cur.label : props.value),
@@ -251,15 +265,50 @@
         const show = (name: string) => tab === name
         const [upd, setUpd] = useState<any>(null)
         const [updBusy, setUpdBusy] = useState(false)
-        const checkUpdate = useCallback(async () => {
-          if (!remote) return
+        const [confirmKey, setConfirmKey] = useState<string | null>(null)
+        const alive = useRef(true)
+        useEffect(() => () => { alive.current = false }, [])
+        const flash = (text: string) => {
+          setNotice(text)
+          globalThis.setTimeout(() => { if (alive.current) setNotice(null) }, 2600)
+        }
+        // Two-step, inline destructive confirmation: no native confirm dialog, no
+        // one-click wipe from a stray click. Any other action clears the arm state.
+        const confirmOnce = (key: string, hint: string, action: () => void) => {
+          if (confirmKey === key) {
+            setConfirmKey(null)
+            action()
+            return
+          }
+          setConfirmKey(key)
+          flash(hint)
+          globalThis.setTimeout(() => { if (alive.current) setConfirmKey(current => current === key ? null : current) }, 5000)
+        }
+        const checkUpdate = useCallback(async (announce = false) => {
+          if (!remote) {
+            if (announce) setError(T('插件 RPC 不可用,请确认插件已启用并重启宿主', 'Plugin RPC unavailable; enable the plugin and restart DSH'))
+            return
+          }
+          if (announce) { setError(null); setNotice(null) }
           setUpdBusy(true)
-          try { setUpd(unwrap(await remote.checkUpdate())) } catch (_e) { /* offline: ignore */ }
+          try {
+            const next = unwrap(await remote.checkUpdate())
+            if (alive.current) {
+              setUpd(next)
+              if (announce) {
+                if (next?.error) setError(T('检查更新失败: ', 'Update check failed: ') + String(next.error))
+                else if (next?.hasUpdate) flash(T('发现新版本 v', 'New version v') + String(next.latest))
+                else if (next?.current && next?.latest && String(next.current) !== String(next.latest)) {
+                  flash(T(`已检查更新:当前 ${next.current} · 发布版 ${next.latest}`, `Checked: current ${next.current} · release ${next.latest}`))
+                } else flash(T('已检查更新:当前已是最新', 'Checked: already up to date'))
+              }
+            }
+          } catch (error: any) {
+            if (announce && alive.current) setError(T('检查更新失败(可能离线): ', 'Update check failed (offline?): ') + String(error?.message ?? error))
+          }
           if (alive.current) setUpdBusy(false)
         }, [remote])
         useEffect(() => { void checkUpdate() }, [checkUpdate])
-        const alive = useRef(true)
-        useEffect(() => () => { alive.current = false }, [])
 
         const applyState = useCallback((next: any) => {
           if (!alive.current || !next) return
@@ -287,6 +336,8 @@
             thinkingEffort: next.config?.thinkingEffort ?? 'auto',
             vendor: next.config?.vendor ?? 'auto',
             enableMediaRouting: next.config?.enableMediaRouting !== false,
+            stickySession: next.config?.stickySession !== false,
+            sessionTurnLimit: String(next.config?.sessionTurnLimit ?? 50),
           })
           publishState(next)
         }, [])
@@ -303,11 +354,15 @@
           return () => { stateSubs.delete(fn) }
         }, [])
 
-        const load = useCallback(async () => {
+        const load = useCallback(async (announce = false) => {
           if (!remote) return
           setBusy(true); setError(null)
-          try { applyState(unwrap(await remote.getState())) } catch (e: any) { setError(String(e?.message ?? e)) }
-          if (alive.current) setBusy(false)
+          let ok = false
+          try { applyState(unwrap(await remote.getState())); ok = true } catch (e: any) { setError(String(e?.message ?? e)) }
+          if (alive.current) {
+            setBusy(false)
+            if (announce && ok) flash(T('已重新载入当前配置', 'Configuration reloaded'))
+          }
         }, [remote, applyState])
 
         useEffect(() => { void load() }, [load])
@@ -333,7 +388,10 @@
           try {
             const result = unwrap(await fn())
             applyState(result?.state ?? result)
-            if (okMessage) setNotice(okMessage)
+            if (okMessage) {
+              setNotice(okMessage)
+              globalThis.setTimeout(() => { if (alive.current) setNotice(null) }, 2600)
+            }
           } catch (e: any) { setError(String(e?.message ?? e)) }
           if (alive.current) setBusy(false)
         }, [remote, applyState])
@@ -401,6 +459,8 @@
             thinkingEffort: draft.thinkingEffort ?? cfg.thinkingEffort ?? 'auto',
             vendor: draft.vendor ?? cfg.vendor ?? 'auto',
             enableMediaRouting: draft.enableMediaRouting !== false,
+            stickySession: draft.stickySession !== false,
+            sessionTurnLimit: Number(draft.sessionTurnLimit ?? cfg.sessionTurnLimit ?? 50),
             includeSpecialEndpoints: draft.includeSpecialEndpoints === true,
             excludeModels: String(draft.excludeModelsText ?? (cfg.excludeModels ?? []).join('\n'))
               .split(/[\n,，]/).map((s: string) => s.trim()).filter((s: string) => s.length > 0),
@@ -412,7 +472,7 @@
             setError(T('决策模型与回退模型不能为空', 'Decision and fallback models cannot be empty'))
             return
           }
-          for (const key of ['decisionTimeoutMs', 'maxAttempts', 'quotaCooldownMinutes', 'rateLimitCooldownSeconds']) {
+          for (const key of ['decisionTimeoutMs', 'maxAttempts', 'quotaCooldownMinutes', 'rateLimitCooldownSeconds', 'sessionTurnLimit']) {
             if (!Number.isFinite(patch[key] as number) || (patch[key] as number) <= 0) {
               setError(T(`字段 ${key} 必须是正数`, `Field ${key} must be a positive number`))
               return
@@ -441,6 +501,14 @@
         // No local sticky pick: resolve the selected connection from the live
         // endpoint, so panel and chat float always show the same account.
         const selectedConn = selectedConnOf(state, cfg)
+        // Several provider entries share the same host entry id (e.g. all rows are
+        // `llm-pi-ai`), so the unique identity is `entryId|providerId`, never id alone.
+        const selectedKey = selectedConn !== undefined ? connKeyOf(selectedConn) : ''
+        const isActiveConn = (c: any): boolean => {
+          if (!selectedConn) return false
+          if (selectedKey !== '|') return selectedKey === connKeyOf(c)
+          return String(selectedConn.baseURL ?? '').replace(/\/+$/, '') === String(c?.baseURL ?? '').replace(/\/+$/, '')
+        }
         const accountSelectValue = activeAccountId !== ''
           ? `acct:${activeAccountId}`
           : selectedConn ? `conn:${selectedConn.entryId}|${selectedConn.providerId}` : ''
@@ -476,8 +544,15 @@
         }
         const connLabel = (c: any): string => connLabelOf(c, cfg?.connectionNames)
         const saveConnName = (c: any) => {
-          const names = { ...(cfg?.connectionNames ?? {}) }
-          if (renVal.trim() !== '') names[connKeyOf(c)] = renVal.trim()
+          const existing = cfg?.connectionNames ?? {}
+          const trimmed = renVal.trim()
+          if (trimmed === String(existing[connKeyOf(c)] ?? '')) {
+            setRenKey(null)
+            flash(T('连接名称未修改', 'Connection name unchanged'))
+            return
+          }
+          const names = { ...existing }
+          if (trimmed !== '') names[connKeyOf(c)] = trimmed
           else delete names[connKeyOf(c)]
           setRenKey(null)
           void mutate(() => remote.updateConfig({ connectionNames: names }), T('连接名称已保存', 'Connection name saved'))
@@ -499,6 +574,9 @@
 
         return h('div', { className: 'bar-root' },
           h('style', null, CSS),
+          error
+            ? h('div', { className: 'bar-toast bar-toast-err', role: 'button', title: T('点击关闭', 'Click to dismiss'), onClick: () => setError(null) }, error + '  ×')
+            : notice ? h('div', { className: 'bar-toast bar-toast-ok' }, notice) : null,
 
           // ---- tab bar (0.6 paged UI) ----
           h('div', { className: 'bar-row', style: { gap: '6px' } },
@@ -512,11 +590,25 @@
           show('account') && h('div', { className: 'bar-card' },
             h('div', { className: 'bar-row' },
               h('h4', null, T('插件更新', 'Plugin update')),
-              upd?.hasUpdate ? h(Badge, { tone: 'warn', text: T('有可用更新', 'Update available') }) : h(Badge, { tone: 'ok', text: T('已是最新', 'Up to date') }),
-              h('span', { className: 'bar-muted bar-mono' }, `${T('当前', 'Current')} ${upd?.current ?? '…'} → ${T('最新', 'Latest')} ${upd?.latest ?? '…'}`),
+              upd?.error
+                ? h(Badge, { tone: 'err', text: T('检查失败', 'Check failed') })
+                : upd?.hasUpdate
+                  ? h(Badge, { tone: 'warn', text: T('有可用更新', 'Update available') })
+                  : (upd?.current && upd?.latest && versionCmp(upd.current, upd.latest) > 0)
+                    ? h(Badge, { tone: 'ok', text: T('当前版本高于发布版', 'Local build is ahead') })
+                    : h(Badge, { tone: 'ok', text: T('已是最新', 'Up to date') }),
+              h('span', { className: 'bar-muted bar-mono' },
+                upd?.error
+                  ? `${T('当前', 'Current')} ${upd?.current ?? '…'} · ${T('未能连接 GitHub', 'GitHub unreachable')}`
+                  : `${T('当前', 'Current')} ${upd?.current ?? '…'} → `
+                    + `${(upd?.current && upd?.latest && versionCmp(upd.current, upd.latest) > 0) ? T('发布版', 'published') : T('最新', 'Latest')} ${upd?.latest ?? '…'}`),
             ),
             h('div', { className: 'bar-row' },
-              h('div', { className: 'bar-btn', role: 'button', onClick: () => void checkUpdate() }, updBusy ? T('检查中…', 'Checking…') : T('检查更新', 'Check for updates')),
+              h('div', {
+                className: 'bar-btn', role: 'button',
+                style: updBusy ? { opacity: .6, cursor: 'default' } : undefined,
+                onClick: () => { if (!updBusy) void checkUpdate(true) },
+              }, updBusy ? T('检查中…', 'Checking…') : T('检查更新', 'Check for updates')),
               upd?.hasUpdate ? h('div', {
                 className: 'bar-btn bar-btn-primary', role: 'button',
                 onClick: () => void mutate(() => remote.applyUpdate(upd.latest), T('更新已启动,宿主将自动重启(停→部署→启动→校验)', 'Updater started; host will restart (stop→deploy→start→verify)')),
@@ -552,7 +644,7 @@
             ),
             h('div', { className: 'bar-row bar-muted' },
               h('span', null, T('接口: ', 'Endpoint: '), h('span', { className: 'bar-mono' }, cfg.baseURL)),
-              h('span', null, T('凭据引用: ', 'Credential ref: '), h('span', { className: 'bar-mono' }, cfg.apiKeyEnv)),
+              h('span', null, T('凭据: ', 'Credential: '), h('span', { className: 'bar-mono' }, cfg.apiKeyConfigured ? T('已解析', 'resolved') : T('未配置', 'missing'))),
               h('span', null, T('最近同步: ', 'Last sync: '), fmtTime(state.pool?.lastSyncAt ?? null)),
             ),
             h('div', { className: 'bar-row' },
@@ -578,8 +670,6 @@
                 ))
                 : null,
             state.pool?.lastSyncError ? h('div', { className: 'bar-error' }, T('同步失败: ', 'Sync failed: '), state.pool.lastSyncError) : null,
-            notice ? h('div', { className: 'bar-ok' }, notice) : null,
-            error ? h('div', { className: 'bar-error' }, error) : null,
           ),
 
           // ---- API account management ----
@@ -601,10 +691,18 @@
                   h('div', { className: 'bar-row bar-muted', style: { fontSize: '11px' } },
                     h('span', null, a.hasKey
                       ? T('Key: ', 'Key: ') + (a.keyHint ?? '••••')
-                      : T('凭据引用: ', 'Credential ref: ') + (a.apiKeyEnv ?? '—')),
+                      : T('凭据: 已配置(引用型)', 'Credential: configured (reference)')),
                     h('div', { className: 'bar-btn', role: 'button', onClick: () => setAcctForm({ id: a.id, name: a.name, baseURL: a.baseURL, apiKey: '', apiKeyEnv: a.apiKeyEnv ?? '' }) }, T('编辑', 'Edit')),
                     a.active ? null : h('div', { className: 'bar-btn', role: 'button', onClick: () => void mutate(() => remote.activateAccount(a.id), T('已切换账号并重新同步模型池', 'Account switched and pool resynced')) }, T('启用', 'Use')),
-                    h('div', { className: 'bar-btn', role: 'button', onClick: () => void mutate(() => remote.removeAccount(a.id), T('账号已删除', 'Account removed')) }, T('删除', 'Delete')),
+                    h('div', {
+                      className: 'bar-btn' + (confirmKey === `del:${a.id}` ? ' bar-btn-danger' : ''),
+                      role: 'button',
+                      onClick: () => confirmOnce(
+                        `del:${a.id}`,
+                        T('再点一次「确认删除」才会删除该账号', 'Click "Confirm" again to delete this account'),
+                        () => void mutate(() => remote.removeAccount(a.id), T('账号已删除', 'Account removed')),
+                      ),
+                    }, confirmKey === `del:${a.id}` ? T('确认删除', 'Confirm') : T('删除', 'Delete')),
                   ),
                 ))),
             h('div', { className: 'bar-row' },
@@ -637,7 +735,7 @@
               ...(state.connections ?? []).map((c: any) => h('div', { key: connKeyOf(c), className: 'bar-history-item' },
                 h('div', { className: 'bar-row' },
                   h('strong', null, connLabel(c)),
-                  selectedConn && String(selectedConn.baseURL ?? '').replace(/\/+$/, '') === String(c.baseURL ?? '').replace(/\/+$/, '') ? h(Badge, { tone: 'ok', text: T('使用中', 'active') }) : null,
+                  selectedConn && isActiveConn(c) ? h(Badge, { tone: 'ok', text: T('使用中', 'active') }) : null,
                   h('span', { className: 'bar-muted bar-mono', style: { fontSize: '11px', wordBreak: 'break-all' } }, c.baseURL),
                 ),
                 h('div', { className: 'bar-row' },
@@ -651,6 +749,9 @@
                       className: 'bar-btn', role: 'button',
                       onClick: () => { setRenKey(connKeyOf(c)); setRenVal((cfg?.connectionNames ?? {})[connKeyOf(c)] ?? '') },
                     }, T('改名', 'Rename')),
+                  renKey === connKeyOf(c)
+                    ? h('div', { className: 'bar-btn', role: 'button', onClick: () => { setRenKey(null); setRenVal('') } }, T('取消', 'Cancel'))
+                    : null,
                   h('div', {
                     className: 'bar-btn', role: 'button',
                     onClick: () => { void mutate(() => remote.switchConnection(c.id, c.providerId), T('已切换连接并重新同步模型池', 'Connection switched and pool resynced')) },
@@ -692,10 +793,24 @@
             h('div', { className: 'bar-row' },
               field(T('额度耗尽冷却(分钟)', 'Quota cooldown (minutes)'), draft.quotaCooldownMinutes, (v: string) => setDraft({ ...draft, quotaCooldownMinutes: v })),
               field(T('限流/网络冷却(秒)', 'Rate-limit cooldown (seconds)'), draft.rateLimitCooldownSeconds, (v: string) => setDraft({ ...draft, rateLimitCooldownSeconds: v })),
+              field(T('会话保持上限(模型调用次数)', 'Session stickiness limit (model calls)'), draft.sessionTurnLimit, (v: string) => setDraft({ ...draft, sessionTurnLimit: v })),
             ),
             h('div', { className: 'bar-row' },
+              h('label', { className: 'bar-check' },
+                h('input', { type: 'checkbox', checked: draft.stickySession !== false, onChange: (e: any) => setDraft({ ...draft, stickySession: e.target.checked }) }),
+                T('同一会话保持同一执行模型(保护提示缓存)', 'Keep one model per session (protect prompt cache)')),
+            ),
+            h('div', { className: 'bar-muted', style: { fontSize: '11px', lineHeight: 1.6 } }, T(
+              '同会话固定模型可命中服务商前缀缓存;换模型会让新模型重新计费。仅在图片输入需要视觉、达到上限或模型冷却时重选。',
+              'Keeping one model per session enables the provider prefix cache; switching makes the new model re-bill the prefix. It only switches for image input without vision, the turn limit, or cooldown.',
+            )),
+            h('div', { className: 'bar-muted', style: { fontSize: '11px', lineHeight: 1.6 } }, T(
+              '决策模型只看到「当前可用、未冷却、未超限、未连续失败」且落在本轮价格带内的候选:简单题 3、普通 4、复杂 8、深度 12(¥/百万 token)。简单题和短代码不会再把旗舰模型选走。',
+              'The decision model only sees candidates that are callable now, not cooling down, within limits and inside this request\'s price band: 3 / 4 / 8 / 12 (¥ per 1M tokens). Simple and short coding requests cannot pull a flagship model.',
+            )),
+            h('div', { className: 'bar-row' },
               h('div', { className: 'bar-btn bar-btn-primary', role: 'button', onClick: saveConfig }, T('保存配置', 'Save')),
-              h('div', { className: 'bar-btn', role: 'button', onClick: () => void load() }, T('重新载入', 'Reload')),
+              h('div', { className: 'bar-btn', role: 'button', onClick: () => void load(true) }, T('重新载入', 'Reload')),
               h('span', { className: 'bar-muted' }, T('保存写入 profile 的 cordis.patch.yml;volatile 字段即时生效', 'Saves into the profile cordis.patch.yml; volatile fields apply live')),
             ),
           ),
@@ -834,14 +949,28 @@
             h('div', { className: 'bar-row' },
               h('h4', null, T('每模型额度上限', 'Per-model usage limits')),
               h('div', {
-                className: 'bar-btn', role: 'button',
-                onClick: () => void mutate(() => remote.resetModelTotals(), T('已重置全部用量', 'All usage reset')),
-              }, T('重置全部用量', 'Reset all usage')),
+                className: 'bar-btn' + (confirmKey === 'reset-all' ? ' bar-btn-danger' : ''),
+                role: 'button',
+                onClick: () => confirmOnce(
+                  'reset-all',
+                  T('再点一次「确认重置」才会清空所有模型的累计用量', 'Click "Confirm reset" again to clear all model usage'),
+                  () => void mutate(() => remote.resetModelTotals(), T('已重置全部用量', 'All usage reset')),
+                ),
+              }, confirmKey === 'reset-all' ? T('确认重置', 'Confirm reset') : T('重置全部用量', 'Reset all usage')),
             ),
             h('div', { className: 'bar-muted' }, T(
               '限额单位为「万 token」:填 100 = 100 万,点「1M」一键设 100 万;达到上限自动路由下一个,清空=不限。旧版误填的小数值(如 100)已自动按「万」迁移,不会再秒触发冷却。',
               'Caps are in 10k tokens: 100 = 1M; "1M" sets a 1M cap. Reaching it routes to the next model; blank = unlimited. Legacy tiny raw values (e.g. 100) are auto-migrated as 10k units.',
             )),
+            (() => {
+              const poolIds = new Set((state.pool?.models ?? []).map((m: any) => m.id))
+              const orphanIds = Object.keys(state.config?.modelLimits ?? {}).filter(id => !poolIds.has(id))
+              if (orphanIds.length === 0) return null
+              return h('div', { className: 'bar-row', style: { flexWrap: 'wrap', gap: '6px', marginTop: '4px' } },
+                h('span', { className: 'bar-muted' }, T('不在当前模型池的旧限额:', 'Stale caps outside the current pool:')),
+                orphanIds.map(id => h('div', { key: `orphan-${id}`, className: 'bar-btn', role: 'button', title: T('清除这条无效限额', 'Clear this stale cap'), onClick: () => setLimit(id, 'maxTokens', '') }, `${id} ×`)),
+              )
+            })(),
             h('div', { style: { maxHeight: '200px', overflow: 'auto', marginTop: '4px' } },
               h('table', { className: 'bar-table' },
                 h('thead', null, h('tr', null,
@@ -1031,11 +1160,16 @@
         // ---- history ----
           show('log') && h('div', { className: 'bar-card' },
             h('div', { className: 'bar-row' },
-              h('h4', null, T('最近路由决策(最多 50 条)', 'Recent routing decisions (last 50)')),
+              h('h4', null, T(`最近路由决策(当前 key:${state.keyLedger?.label ?? '—'})`, `Recent decisions (key: ${state.keyLedger?.label ?? '—'})`)),
               h('div', {
-                className: 'bar-btn', role: 'button',
-                onClick: () => void mutate(() => remote.clearHistory(), T('历史已清空', 'History cleared')),
-              }, T('清空', 'Clear')),
+                className: 'bar-btn' + (confirmKey === 'clear-history' ? ' bar-btn-danger' : ''),
+                role: 'button',
+                onClick: () => confirmOnce(
+                  'clear-history',
+                  T('再点一次「确认清空」才会删除当前 key 的路由历史', 'Click "Confirm clear" again to delete this key\'s history'),
+                  () => void mutate(() => remote.clearHistory(), T('历史已清空', 'History cleared')),
+                ),
+              }, confirmKey === 'clear-history' ? T('确认清空', 'Confirm clear') : T('清空', 'Clear')),
             ),
             (state.history ?? []).length === 0
               ? h('div', { className: 'bar-muted' }, T(
@@ -1049,7 +1183,12 @@
                     h('span', { className: 'bar-mono' }, r.finalModel ?? '—'),
                     h('span', { className: 'bar-muted' }, `${fmtTime(r.at)} · ${r.task} · ${r.modality} · ${decisionSourceLabel(r.decisionSource)}`
                       + (r.decisionTokens ? ` · 决策 ${r.decisionTokens} tok` : '')
-                      + (r.tokens ? ` · 回答 ${r.tokens} tok` : '')
+                      + ((r.inputTokens ?? 0) + (r.outputTokens ?? 0) + (r.cacheReadTokens ?? 0) > 0
+                        ? ` · 输入 ${r.inputTokens ?? 0} · 输出 ${r.outputTokens ?? 0}`
+                        : (r.tokens ? ` · 回答 ${r.tokens} tok` : ''))
+                      + ((r.inputTokens ?? 0) + (r.cacheReadTokens ?? 0) > 0
+                        ? ` · 缓存 ${Math.round((r.cacheReadTokens ?? 0) / ((r.inputTokens ?? 0) + (r.cacheReadTokens ?? 0)) * 100)}%`
+                        : '')
                       + ` · ${r.origin === 'user' ? T('用户指定', 'user-pinned') : T('自动', 'auto')} · ${r.strategy ?? 'auto'}`),
                   ),
                   r.reasoning ? h('div', { className: 'bar-muted' }, r.reasoning) : null,
@@ -1111,7 +1250,7 @@
           h('style', null, CSS),
           h('span', { className: 'bar-dot', style: { background: line ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-state-idle-primary)' } }),
           h('span', null, line ?? T('智能路由 Auto Router:状态载入中…', 'Auto router: loading…')),
-          last ? h('span', { className: 'bar-muted bar-mono' }, `${T('上次', 'last')} ${last.finalModel ?? '—'} · ${last.tokens ?? 0} tok · ${last.origin === 'user' ? T('用户指定', 'user') : T('自动', 'auto')}`) : null,
+          last ? h('span', { className: 'bar-muted bar-mono' }, `${T('上次', 'last')} ${last.finalModel ?? '—'} · ${T('总', 'total')} ${last.tokens ?? 0} tok · ${last.origin === 'user' ? T('用户指定', 'user') : T('自动', 'auto')}`) : null,
           h('select', {
             className: 'bar-input', style: { maxWidth: '150px' }, value: st?.config?.sortStrategy ?? 'auto',
             onChange: (e: any) => setStrategy(e.target.value),
@@ -1159,6 +1298,14 @@
           try { off = clientCtx?.remote?.$on?.('settings/document-updated', () => { void pull() }) } catch (_e) { /* 宿主不支持该事件 */ }
           return () => { alive.current = false; clearInterval(timer); try { off?.() } catch (_e) { /* ignore */ } }
         }, [pull])
+        // Follow switches made from the settings panel immediately, so the
+        // float does not show the previous key's pool/history for up to 8s.
+        useEffect(() => {
+          const fn = (next: any) => { if (alive.current && next) setSt(next) }
+          stateSubs.add(fn)
+          if (sharedState !== null) fn(sharedState)
+          return () => { stateSubs.delete(fn) }
+        }, [])
         /** One RPC: adopt its returned state at once and always surface the outcome. */
         const run = useCallback(async (label: string, fn: (r: BarRemoteApi) => Promise<any>, okText?: string) => {
           const r = remote()
@@ -1176,6 +1323,11 @@
           }
           if (alive.current) setBusy(null)
         }, [remote, busy, pull])
+        useEffect(() => {
+          if (!msg) return
+          const timer = setTimeout(() => { if (alive.current) setMsg(null) }, 2_600)
+          return () => clearTimeout(timer)
+        }, [msg])
         const cfg = st?.config ?? {}
         const accounts: any[] = cfg.accounts ?? []
         const conns: any[] = st?.connections ?? []
@@ -1192,8 +1344,12 @@
         }
         const cooling = (st?.quota ?? []).filter((q: any) => !q.available).length
         const history: any[] = st?.history ?? []
-        const last = history[0]
-        const recent = history.slice(0, 8).reverse()
+        // Title/summary helpers are billed in the ledger but are not a user
+        // decision; showing them would make "上次决策" look like the router
+        // chose a generic model for the user's real task.
+        const userHistory = history.filter((row: any) => row?.utility !== true)
+        const last = userHistory[0] ?? history[0]
+        const recent = userHistory.slice(0, 8).reverse()
         const okCount = recent.filter(row => row.ok).length
         const maxTok = Math.max(1, ...recent.map(row => Number(row.tokens) || 0))
         const fmtClock = (ms: number): string => {
@@ -1222,42 +1378,74 @@
           h('div', { className: 'bar-muted', style: { fontSize: '10px' } }, label),
           h('div', { className: 'bar-muted', style: { fontSize: '10px', whiteSpace: 'normal', wordBreak: 'break-all', lineHeight: 1.3, maxHeight: '2.6em', overflow: 'hidden' }, title: model }, model))
         const box: any = {
-          position: 'fixed', right: '12px', bottom: '12px', zIndex: 900, pointerEvents: 'auto',
+          position: 'fixed', right: '12px', bottom: '86px', zIndex: 2147483647, pointerEvents: 'auto',
           width: open ? '308px' : 'auto', maxWidth: 'calc(100vw - 24px)', background: 'var(--dsw-alias-bg-l1, #fff)',
           border: '1px solid var(--dsw-alias-border-l1, #ddd)', borderRadius: '12px',
           boxShadow: '0 6px 24px rgba(0,0,0,.18)', padding: '10px 12px', fontSize: '12px',
           color: 'var(--dsw-alias-text-l1, #222)', boxSizing: 'border-box',
+          maxHeight: 'calc(100vh - 104px)', overflowY: 'auto',
         }
-        if (!open) return h('div', { style: { ...box, cursor: 'pointer' }, onClick: () => setOpen(true) },
+        if (!open) return h('div', {
+          style: { position: 'fixed', right: '12px', bottom: '86px', zIndex: 2147483647, pointerEvents: 'auto' },
+        },
           h('style', null, CSS),
-          h('span', { style: { display: 'inline-block', width: 8, height: 8, borderRadius: 4, marginRight: 6, background: st ? 'var(--dsw-alias-state-success-primary, #22c55e)' : '#999' } }),
-          '智能路由')
+          h('button', {
+            type: 'button',
+            'aria-label': '展开智能路由状态浮窗',
+            title: '展开智能路由状态浮窗',
+            style: {
+              position: 'static', width: 'auto', maxWidth: 'calc(100vw - 24px)', background: 'var(--dsw-alias-bg-l1, #fff)',
+              border: '1px solid var(--dsw-alias-border-l1, #ddd)', borderRadius: '999px',
+              boxShadow: '0 4px 16px rgba(0,0,0,.16)', padding: '7px 12px', fontSize: '12px',
+              cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left', color: 'var(--dsw-alias-text-l1, #222)',
+              whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', boxSizing: 'border-box',
+            },
+            onClick: () => setOpen(true),
+          },
+            h('span', { style: { display: 'inline-block', width: 8, height: 8, borderRadius: 4, marginRight: 6, background: st ? 'var(--dsw-alias-state-success-primary, #22c55e)' : '#999' } }),
+            '智能路由'))
         return h('div', { style: box },
           h('style', null, CSS),
           h('div', { className: 'bar-row', style: { justifyContent: 'space-between', gap: '8px' } },
             h('strong', { style: { display: 'flex', alignItems: 'center', gap: '6px' } },
               h('span', { style: { display: 'inline-block', width: 7, height: 7, borderRadius: 4, background: st ? 'var(--dsw-alias-state-success-primary, #22c55e)' : '#999' } }),
-              '智能路由'),
-            h('span', { className: 'bar-muted', style: { cursor: 'pointer' }, onClick: () => setOpen(false) }, '收起')),
-          h('div', { className: 'bar-muted', style: { margin: '4px 0', fontSize: '11px' }, title: st?.keyLedger ? `当前 key:${st.keyLedger.label}` : undefined },
-            st ? `模型池 ${st.pool?.count ?? 0} · 冷却 ${cooling} · 台账 ${st.keyLedger?.totalTokens ?? 0} tok${(st.ledgersTotal ?? 0) !== (st.keyLedger?.totalTokens ?? 0) ? `(累计 ${st.ledgersTotal})` : ''}` : '状态载入中…'),
+              '智能路由')),
+          h('div', {
+            className: msg ? (msg.tone === 'ok' ? 'bar-ok' : 'bar-error') : 'bar-muted',
+            style: {
+              margin: '4px 0', fontSize: '11px', whiteSpace: 'nowrap', overflow: 'hidden',
+              textOverflow: 'ellipsis', cursor: msg ? 'pointer' : undefined,
+            },
+            title: msg?.text ?? (st?.keyLedger ? `当前 key:${st.keyLedger.label}` : undefined),
+            onClick: msg ? () => setMsg(null) : undefined,
+          }, msg ? msg.text : st ? `模型池 ${st.pool?.count ?? 0} · 冷却 ${cooling} · 台账 ${st.keyLedger?.totalTokens ?? 0} tok${(st.ledgersTotal ?? 0) !== (st.keyLedger?.totalTokens ?? 0) ? `(累计 ${st.ledgersTotal})` : ''}` : '状态载入中…'),
 
           // ---- 上次决策可视化:任务 → 决策模型 → 执行模型 ----
           last ? h('div', { style: { border: '1px solid var(--dsw-alias-border-l1, #eee)', borderRadius: '8px', padding: '8px', margin: '6px 0' } },
             h('div', { className: 'bar-row', style: { justifyContent: 'space-between', gap: '6px' } },
               h('span', { style: { fontWeight: 600 } }, '上次决策'),
               h('span', { className: 'bar-muted', style: { fontSize: '9.5px', flexShrink: 0 } }, `${fmtClock(last.at)} · ${last.origin === 'user' ? '你指定' : '自动'}`)),
+            h('div', {
+              className: 'bar-muted',
+              style: { fontSize: '9.5px', marginTop: '1px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+              title: st?.keyLedger ? `当前 key:${st.keyLedger.label}` : undefined,
+            }, `当前 key:${st?.keyLedger?.label ?? '—'}`),
             h('div', { className: 'bar-row', style: { gap: '4px', margin: '4px 0' } },
               chip(TASK_LABELS_F[last.task] ?? last.task ?? '通用'),
               chip(sourceText(last)),
               chip(STRATEGY_LABELS_F[last.strategy] ?? last.strategy ?? '—'),
               chip(last.ok ? '成功' : '失败', last.ok ? 'ok' : 'err')),
             h('div', { style: { display: 'flex', alignItems: 'stretch', gap: '6px', margin: '4px 0' } },
-              node('决策模型', last.decisionModel ?? (last.decisionSource === 'heuristic' ? '规则判断' : '—'), false),
+              node('决策模型', last.decisionModel ?? (last.decisionSource === 'heuristic' ? '未调用' : '—'), false),
               h('div', { style: { alignSelf: 'center', fontSize: '13px' } }, '→'),
               node('执行模型', last.finalModel ?? '—', true)),
             h('div', { className: 'bar-muted', style: { fontSize: '10px', marginTop: '4px' } }, [
-              `回答 ${last.tokens ?? 0} tok`,
+              (last.inputTokens ?? 0) + (last.outputTokens ?? 0) + (last.cacheReadTokens ?? 0) > 0
+                ? `输入 ${last.inputTokens ?? 0} · 输出 ${last.outputTokens ?? 0}`
+                : `回答 ${last.tokens ?? 0} tok`,
+              (last.inputTokens ?? 0) + (last.cacheReadTokens ?? 0) > 0
+                ? `缓存 ${Math.round((last.cacheReadTokens ?? 0) / ((last.inputTokens ?? 0) + (last.cacheReadTokens ?? 0)) * 100)}%`
+                : '',
               last.decisionTokens ? `决策 ${last.decisionTokens} tok` : '',
               (last.attempts?.length ?? 0) > 1 ? `试了 ${last.attempts.length} 个模型` : '',
             ].filter(Boolean).join(' · ')),
@@ -1282,20 +1470,23 @@
             h('div', { className: 'bar-muted', style: { fontSize: '10px', marginTop: '2px' } }, `近 ${recent.length} 次 · 成功 ${okCount}/${recent.length}`))
             : null,
 
-          msg ? h('div', { className: msg.tone === 'ok' ? 'bar-ok' : 'bar-error', style: { fontSize: '11px', margin: '4px 0' } }, msg.text) : null,
-
-          h('div', { className: 'bar-row', style: { gap: '4px', marginTop: '4px' } },
-            h('select', {
-              className: 'bar-input', style: { flex: 1, minWidth: 0 }, value: cfg.sortStrategy ?? 'auto', disabled: busy !== null,
-              onChange: (e: any) => void run('切换排序', r => r.updateConfig({ sortStrategy: e.target.value }), `排序已切换:${STRATEGY_LABELS_F[e.target.value] ?? e.target.value}`),
-            },
-              h('option', { value: 'auto' }, '智能排序'),
-              h('option', { value: 'price' }, '价格优先'),
-              h('option', { value: 'capability' }, '能力优先'),
-              h('option', { value: 'speed' }, '速度优先'),
-              h('option', { value: 'free_quota' }, '薅免费额度')),
-            h('div', {
-              className: 'bar-btn', role: 'button',
+          h('select', {
+            className: 'bar-input', style: { width: '100%', marginTop: '4px', minWidth: 0 }, value: cfg.sortStrategy ?? 'auto', disabled: busy !== null,
+            onChange: (e: any) => void run('切换排序', r => r.updateConfig({ sortStrategy: e.target.value }), `排序已切换:${STRATEGY_LABELS_F[e.target.value] ?? e.target.value}`),
+          },
+            h('option', { value: 'auto' }, '智能排序'),
+            h('option', { value: 'price' }, '价格优先'),
+            h('option', { value: 'capability' }, '能力优先'),
+            h('option', { value: 'speed' }, '速度优先'),
+            h('option', { value: 'free_quota' }, '薅免费额度')),
+          h('div', { className: 'bar-row', style: { gap: '4px', marginTop: '4px', justifyContent: 'flex-end' } },
+            h('button', {
+              type: 'button', className: 'bar-btn', 'aria-label': '收起智能路由状态浮窗',
+              style: { padding: '2px 8px', fontSize: '10.5px' },
+              onClick: () => setOpen(false),
+            }, '收起浮窗'),
+            h('button', {
+              type: 'button', className: 'bar-btn', 'aria-label': '刷新智能路由模型池',
               style: busy === '刷新模型池' ? { opacity: .6 } : undefined,
               onClick: () => void run('刷新模型池', r => r.refreshPool(), '模型池已刷新'),
             }, busy === '刷新模型池' ? '刷新中…' : '刷新')),
@@ -1359,3 +1550,5 @@
     },
   })
 }
+
+

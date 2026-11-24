@@ -3,7 +3,7 @@
 # 选项: -SkipStop 只部署不停止; -NoStart 只停+部署不起; -InstallDir 自定义安装目录
 param(
   [string]$InstallDir = 'D:\Downloads\DSH\plugins\dsh-auto-router',
-  [string]$HostExe = 'D:\SoftWare\DSH\lastest-officially\DSH NEXT.exe',
+  [string]$HostExe = 'D:\SoftWare\DSH\0.2.0-rc.2\DeepSeek Harness.exe',
   [switch]$SkipStop,
   [switch]$NoStart
 )
@@ -75,6 +75,10 @@ if (-not $NoStart) {
   # Restart the SAME host with its original args and DSH_HOME, so a second
   # DSH version never boots into another version's profile.
   if ($dshHome) { $env:DSH_HOME = $dshHome; Write-Host "==> DSH_HOME=$dshHome" }
+  # Drop inherited sandbox NPM_CONFIG_* so the plugin manager and pnpm see the
+  # user's real global configuration.
+  Get-ChildItem Env: | Where-Object { $_.Name -like 'NPM_CONFIG_*' -or $_.Name -like 'npm_config_*' } |
+    ForEach-Object { Remove-Item -LiteralPath "Env:$($_.Name)" -ErrorAction SilentlyContinue }
   Write-Host "==> 启动宿主: $HostExe $hostArgs"
   if ($hostArgs) { Start-Process -FilePath $HostExe -ArgumentList $hostArgs }
   else { Start-Process -FilePath $HostExe }
