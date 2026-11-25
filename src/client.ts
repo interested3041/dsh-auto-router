@@ -786,7 +786,7 @@
                   h('option', { value: 'price' }, T('价格优先(便宜先用)', 'Price first (cheapest first)')),
                   h('option', { value: 'capability' }, T('能力优先(旗舰先用)', 'Capability first')),
                   h('option', { value: 'speed' }, T('速度优先(快先用)', 'Speed first')),
-                  h('option', { value: 'free_quota' }, T('薅免费额度(按桶轮转)', 'Free-quota rotation')))),
+                  h('option', { value: 'free_quota' }, T('免费额度轮转(轻量优先)', 'Free-quota rotation (light first)')))),
               field(T('免费额度桶大小(tok)', 'Free-quota bucket (tok)'), draft.bucketTokens, (v: string) => setDraft({ ...draft, bucketTokens: v })),
               field(T('额度完成容差(0–0.5)', 'Quota tolerance (0–0.5)'), draft.bucketTolerance, (v: string) => setDraft({ ...draft, bucketTolerance: v })),
             ),
@@ -823,7 +823,7 @@
               '① Auto routing spends balance faster: hard questions go to stronger (pricier) models, costing more per query than a fixed cheap model, but with better results. Pick "Price first" to save.',
             )),
             h('div', { className: 'bar-muted' }, T(
-              '② 薅免费额度优先=每个模型先用满一桶免费额度再换下一个,把各家送的额度都薅一遍(比任何单一排序薅得多)。台账按 key 记忆:切换排序不重置,只有换 key 才重置;换 key 又换回可能使该 key 超出免费额度,建议配合厂商「用完即停」。',
+              '② 免费额度轮转=按“已用 token / 桶大小”的比例,优先用当前最空、最便宜的轻量模型(如 qwen-flash、qwen3.8-flash、deepseek-v4.1-flash),用完一轮再换下一批;不是把某个模型先烧满 1M 才换。台账按 key 记忆:切换排序不重置,只有换 key 才重置;换 key 又换回可能使该 key 超出免费额度,建议配合厂商「用完即停」。',
               '② Free-quota first drains one bucket per model before moving on, milking every vendor\'s free grant. The ledger is per-key: switching strategy never resets it, only a key change does; switching away and back may push a key past its free quota — pair with the vendor\'s "stop when exhausted".',
             )),
           ),
@@ -1259,7 +1259,7 @@
             h('option', { value: 'price' }, T('价格优先', 'Price')),
             h('option', { value: 'capability' }, T('能力优先', 'Capability')),
             h('option', { value: 'speed' }, T('速度优先', 'Speed')),
-            h('option', { value: 'free_quota' }, T('薅免费额度', 'Free quota'))),
+            h('option', { value: 'free_quota' }, T('免费额度轮转', 'Free-quota rotation'))),
         )
       }
 
@@ -1268,7 +1268,7 @@
         image: '图片分析', writing: '写作', translation: '翻译', code: '代码', reasoning: '推理', general: '通用',
       }
       const STRATEGY_LABELS_F: Record<string, string> = {
-        auto: '智能排序', price: '价格优先', capability: '能力优先', speed: '速度优先', free_quota: '薅免费额度',
+        auto: '智能排序', price: '价格优先', capability: '能力优先', speed: '速度优先', free_quota: '免费额度轮转',
       }
       function FloatCard() {
         const [st, setSt] = useState<any>(null)
@@ -1478,7 +1478,7 @@
             h('option', { value: 'price' }, '价格优先'),
             h('option', { value: 'capability' }, '能力优先'),
             h('option', { value: 'speed' }, '速度优先'),
-            h('option', { value: 'free_quota' }, '薅免费额度')),
+            h('option', { value: 'free_quota' }, '免费额度轮转')),
           h('div', { className: 'bar-row', style: { gap: '4px', marginTop: '4px', justifyContent: 'flex-end' } },
             h('button', {
               type: 'button', className: 'bar-btn', 'aria-label': '收起智能路由状态浮窗',

@@ -269,6 +269,20 @@ export function buildCandidates(
   const pinned = new Set(options.taskRoutes[task] ?? [])
   const affordable = ranked.filter(id => pinned.has(id) || priceOf(id) <= cap)
   if (affordable.length > 0) ranked = affordable
+  // Free-quota rotation is explicitly a "spread the free credits" mode. Keep
+  // genuinely weak general models out of it, but retain a task-specialized
+  // light model (e.g. qwen3-coder-flash) even when its raw quality score is low.
+  if (options.sortStrategy === 'free_quota') {
+    const minQuality = task === 'general' ? 45 : 50
+    const safe = ranked.filter(id => {
+      if (pinned.has(id)) return true
+      const traits = pool.byId.get(id)?.traits
+      if (traits === undefined) return true
+      if (task === 'general') return traits.quality >= minQuality
+      return traits.tasks.includes(task) || traits.quality >= 60
+    })
+    if (safe.length > 0) ranked = safe
+  }
   const fresh = ranked.filter(id => !store.inCooldown(id))
   const cooled = ranked.filter(id => store.inCooldown(id))
   const ordered = [...fresh, ...cooled]
