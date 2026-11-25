@@ -3,12 +3,23 @@
 // safely (stop -> deploy -> start -> verify), never overwriting live files.
 import { execFile } from 'node:child_process'
 import { spawn } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
+
+/**
+ * PowerShell executable for update checks. DSH does not always inherit the
+ * user's PATH, so `pwsh` is frequently absent even though Windows PowerShell is
+ * always installed under System32. Prefer the built-in one on Windows.
+ */
+function powershellExe(): string {
+  const root = process.env.SystemRoot ?? 'C:\\Windows'
+  const builtin = join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  return existsSync(builtin) ? builtin : 'powershell.exe'
+}
 
 /** GitHub repo that publishes this plugin's releases. */
 export const UPDATE_REPO = 'interested3041/dsh-auto-router'
@@ -59,7 +70,7 @@ export async function checkLatest(repo: string = UPDATE_REPO): Promise<UpdateInf
   let latest = current
   let error: string | undefined
   try {
-    const { stdout } = await execFileAsync('pwsh', ['-NoProfile', '-Command', ps], { timeout: 20_000 })
+    const { stdout } = await execFileAsync(powershellExe(), ['-NoProfile', '-NonInteractive', '-Command', ps], { timeout: 20_000 })
     const tag = stdout.trim().split(/\r?\n/).pop()?.trim() ?? ''
     if (tag === '__FAIL__') error = '无法访问 GitHub Releases(检查代理或网络)'
     else if (/^v?\d+\.\d+\.\d+/.test(tag)) latest = tag.replace(/^v/, '')
@@ -84,8 +95,8 @@ export function applyUpdate(tag: string, repo: string = UPDATE_REPO): { started:
   const dir = installDir()
   const script = join(dir, 'scripts', 'self-update.ps1')
   try {
-    const child = spawn('pwsh', [
-      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script,
+    const child = spawn(powershellExe(), [
+      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script,
       '-Tag', tag, '-Repo', repo, '-InstallDir', dir, '-HostExe', process.execPath,
     ], { detached: true, stdio: 'ignore', windowsHide: true })
     child.unref()

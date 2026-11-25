@@ -142,7 +142,7 @@
 .bar-mono { font-family:ui-monospace, Consolas, monospace; }
 .bar-error { color:var(--dsw-alias-state-error-primary); font-size:12px; white-space:pre-wrap; }
 .bar-ok { color:var(--dsw-alias-state-success-primary); font-size:12px; }
-.bar-toast { position:fixed; left:50%; top:78px; transform:translateX(-50%); z-index:9999; max-width:70vw; padding:8px 14px; border-radius:8px; background:var(--dsw-alias-bg-layer-2); border:1px solid var(--dsw-alias-border-l1); box-shadow:0 8px 24px rgba(0,0,0,.18); font-size:12px; white-space:pre-wrap; cursor:pointer; }
+.bar-toast { position:sticky; top:8px; align-self:center; z-index:9999; max-width:70vw; padding:8px 14px; border-radius:8px; background:var(--dsw-alias-bg-layer-2); border:1px solid var(--dsw-alias-border-l1); box-shadow:0 8px 24px rgba(0,0,0,.18); font-size:12px; white-space:pre-wrap; cursor:pointer; }
 .bar-toast-ok { color:var(--dsw-alias-state-success-primary); }
 .bar-toast-err { color:var(--dsw-alias-state-error-primary); }
 .bar-history-item { border:1px solid var(--dsw-alias-border-l1); border-radius:8px; padding:8px 10px; display:flex; flex-direction:column; gap:4px; background:var(--dsw-alias-bg-layer-2); }
