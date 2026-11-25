@@ -100,6 +100,8 @@ export interface HistoryView {
   strategy: string
   /** Local ledger identity used. */
   keyId: string | null
+  /** Conversation/session that produced this record. */
+  sessionId: string | null
   /** Answer tokens consumed by the final model. */
   tokens: number
   /** Non-cached input tokens. */
@@ -492,6 +494,7 @@ async function stateView(ctx: HostContext, router: Router, store: RouterStore): 
     origin: record.origin ?? 'auto',
     strategy: record.strategy ?? 'auto',
     keyId: record.keyId ?? null,
+    sessionId: record.sessionId ?? null,
     tokens: record.tokens ?? 0,
     inputTokens: record.inputTokens ?? 0,
     outputTokens: record.outputTokens ?? 0,
