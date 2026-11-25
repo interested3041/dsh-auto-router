@@ -3,7 +3,7 @@
 # 选项: -SkipStop 只部署不停止; -NoStart 只停+部署不起; -InstallDir 自定义安装目录
 param(
   [string]$InstallDir = 'D:\Downloads\DSH\plugins\dsh-auto-router',
-  [string]$HostExe = 'D:\SoftWare\DSH\0.2.0-rc.2\DeepSeek Harness.exe',
+  [string]$HostExe = 'D:\SoftWare\DSH\lastest-officially\DSH NEXT\DSH NEXT.exe',
   [switch]$SkipStop,
   [switch]$NoStart
 )
@@ -24,7 +24,13 @@ if ($mainProc -and $mainProc.CommandLine) {
   if ($m.Success) { $hostArgs = $m.Groups[1].Value.Trim() }
 }
 $dshHome = $null
-$hostChild = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match 'dsh-desktop-host' } | Select-Object -First 1
+# Only the host child spawned by the main process we are updating; otherwise a
+# concurrently running DSH version can supply a foreign profile/DSH_HOME.
+$hostChild = if ($mainProc) {
+  Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+    $_.ParentProcessId -eq $mainProc.ProcessId -and $_.CommandLine -match 'dsh-desktop-host'
+  } | Select-Object -First 1
+}
 if ($hostChild -and $hostChild.CommandLine) {
   $pm = [regex]::Match($hostChild.CommandLine, '([A-Za-z]:\\[^"\s]*?\\profiles\\[^"\s]+)')
   if ($pm.Success) { $dshHome = Split-Path (Split-Path $pm.Groups[1].Value -Parent) -Parent }
