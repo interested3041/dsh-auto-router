@@ -1483,7 +1483,10 @@
             h('button', {
               type: 'button', className: 'bar-btn', 'aria-label': '收起智能路由状态浮窗',
               style: { padding: '2px 8px', fontSize: '10.5px' },
-              onClick: () => setOpen(false),
+              // 用 pointerdown 收起:click 在重排后可能落到同一位置新出现的
+              // “智能路由”胶囊上,导致刚收起又被展开。
+              onPointerDown: (e: any) => { e.preventDefault(); e.stopPropagation(); setOpen(false) },
+              onClick: (e: any) => e.stopPropagation(),
             }, '收起浮窗'),
             h('button', {
               type: 'button', className: 'bar-btn', 'aria-label': '刷新智能路由模型池',
