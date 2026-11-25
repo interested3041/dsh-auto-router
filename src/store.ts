@@ -55,6 +55,8 @@ export interface RouteRecord {
   strategy?: string
   /** Local key identity the tokens were charged to. */
   keyId?: string
+  /** Conversation/session that produced this record (when the host sends one). */
+  sessionId?: string
   /** Execution tokens (input+output) charged for this request. */
   tokens?: number
   /** Non-cached input tokens billed for this request. */
