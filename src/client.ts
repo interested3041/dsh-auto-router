@@ -1287,7 +1287,7 @@
       const STRATEGY_LABELS_F: Record<string, string> = {
         auto: '智能排序', price: '价格优先', capability: '能力优先', speed: '速度优先', free_quota: '免费额度轮转',
       }
-      function FloatCard() {
+      function FloatCard(props: any) {
         const [st, setSt] = useState<any>(null)
         const viewportWidth = Number((globalThis as any).innerWidth ?? 1200)
         const [open, setOpen] = useState<boolean>(viewportWidth >= 720)
@@ -1365,14 +1365,40 @@
         // decision; showing them would make "上次决策" look like the router
         // chose a generic model for the user's real task.
         const userHistory = history.filter((row: any) => row?.utility !== true)
-        const last = userHistory[0] ?? history[0]
-        const recent = userHistory.slice(0, 8).reverse()
-        // Scope the model breakdown to the same conversation as the last
-        // decision. Older records (before 0.9.7) have no sessionId, so fall
-        // back to the most recent rows instead of pretending they are one chat.
-        const sessionRows: any[] = last?.sessionId
-          ? userHistory.filter((row: any) => row.sessionId === last.sessionId).slice(0, 60)
-          : userHistory.slice(0, 12)
+        // The floating card lives in the root `shell.overlay` slot, so it has no
+        // sessionId of its own. The Session UI's list row for the conversation
+        // currently retained by the main view is the open chat. Requiring
+        // exactly one winner avoids a transient double-retain during a sidebar
+        // switch; the next list update settles on the new chat.
+        const useSessions = (props as any)?.useSessions as
+          | ((selector: (state: any) => unknown) => unknown)
+          | undefined
+        const currentSessionId = typeof useSessions === 'function'
+          ? useSessions((state: any) => {
+            const ids: string[] = Array.isArray(state?.ids) ? state.ids : []
+            const byId = state?.byId ?? {}
+            const retained = ids.filter((id: string) => (byId[id]?.retainedBy?.mainView ?? 0) > 0)
+            return retained.length === 1 ? retained[0] : undefined
+          })
+          : undefined
+        const inSession = typeof currentSessionId === 'string' && currentSessionId.length > 0
+        const sessionHistory: any[] = inSession
+          ? userHistory.filter((row: any) => row?.sessionId === currentSessionId)
+          : []
+        // Inside a conversation, the card must follow that conversation, not
+        // the newest route record from some other chat. Outside one (settings,
+        // home), keeping the latest record is still the useful global status.
+        const last = inSession
+          ? (sessionHistory[0] ?? null)
+          : (userHistory[0] ?? history[0] ?? null)
+        const recent = (inSession ? sessionHistory : userHistory).slice(0, 8).reverse()
+        // A route record always belongs to one chat; use the explicit open
+        // session when known, otherwise retain the old global-last fallback.
+        const sessionRows: any[] = inSession
+          ? sessionHistory.slice(0, 60)
+          : last?.sessionId
+            ? userHistory.filter((row: any) => row.sessionId === last.sessionId).slice(0, 60)
+            : userHistory.slice(0, 12)
         const countModels = (rows: any[], pick: (row: any) => string | null | undefined): [string, number][] => {
           const counts = new Map<string, number>()
           for (const row of rows) {
@@ -1464,7 +1490,7 @@
           // ---- 上次决策可视化:任务 → 决策模型 → 执行模型 ----
           last ? h('div', { style: { border: '1px solid var(--dsw-alias-border-l1, #eee)', borderRadius: '8px', padding: '8px', margin: '6px 0' } },
             h('div', { className: 'bar-row', style: { justifyContent: 'space-between', gap: '6px' } },
-              h('span', { style: { fontWeight: 600 } }, '上次决策'),
+              h('span', { style: { fontWeight: 600 } }, inSession ? '本会话上次决策' : '上次决策'),
               h('span', { className: 'bar-muted', style: { fontSize: '9.5px', flexShrink: 0 } }, `${fmtClock(last.at)} · ${last.origin === 'user' ? '你指定' : '自动'}`)),
             h('div', {
               className: 'bar-muted',
@@ -1498,7 +1524,7 @@
             // this conversation, not just the one that served the last turn.
             executionModels.length > 0 ? h('div', { style: { marginTop: '5px' } },
               h('div', { className: 'bar-muted', style: { fontSize: '10px', marginBottom: '2px' } },
-                `${last.sessionId ? '本会话' : '最近'}成功执行模型（${sessionRows.length} 次请求）`),
+                `${inSession ? '本会话' : '最近'}成功执行模型（${sessionRows.length} 次请求）`),
               h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '3px' } },
                 ...executionModels.slice(0, 8).map(([model, count]) => chip(`${model} ×${count}`, 'ok')),
                 executionModels.length > 8
@@ -1512,7 +1538,9 @@
               title: String(last.reasoning),
             }, `理由:${String(last.reasoning).slice(0, 140)}${String(last.reasoning).length > 140 ? '…' : ''}`) : null)
             : h('div', { className: 'bar-muted', style: { margin: '8px 0', fontSize: '11px' } },
-              '还没有路由记录 — 发一条消息后,这里会显示「任务 → 决策模型 → 执行模型」的分配结果。'),
+              inSession
+                ? '本会话还没有路由记录 — 在这里发一条消息后,会显示「任务 → 决策模型 → 执行模型」的分配结果。'
+                : '还没有路由记录 — 发一条消息后,这里会显示「任务 → 决策模型 → 执行模型」的分配结果。'),
 
           // ---- 近 8 次迷你趋势 ----
           recent.length > 0 ? h('div', { style: { margin: '4px 0 6px' } },
@@ -1525,7 +1553,7 @@
                   background: row.ok ? 'rgba(34,197,94,.55)' : 'rgba(239,68,68,.6)', borderRadius: '2px',
                 },
               }))),
-            h('div', { className: 'bar-muted', style: { fontSize: '10px', marginTop: '2px' } }, `近 ${recent.length} 次 · 成功 ${okCount}/${recent.length}`))
+            h('div', { className: 'bar-muted', style: { fontSize: '10px', marginTop: '2px' } }, `${inSession ? '本会话近' : '近'} ${recent.length} 次 · 成功 ${okCount}/${recent.length}`))
             : null,
 
           h('select', {
