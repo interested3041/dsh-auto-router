@@ -1287,10 +1287,37 @@
       const STRATEGY_LABELS_F: Record<string, string> = {
         auto: '智能排序', price: '价格优先', capability: '能力优先', speed: '速度优先', free_quota: '免费额度轮转',
       }
+      const FLOAT_POS_KEY = 'dsh-auto-router:float-pos:v1'
+      const readFloatPos = (): { left: number; top: number } | null => {
+        try {
+          const raw = (globalThis as any).localStorage?.getItem(FLOAT_POS_KEY)
+          if (!raw) return null
+          const parsed = JSON.parse(raw)
+          if (!Number.isFinite(parsed?.left) || !Number.isFinite(parsed?.top)) return null
+          const vw = Number((globalThis as any).innerWidth ?? 1200)
+          const vh = Number((globalThis as any).innerHeight ?? 800)
+          // The pill is about 90x32. Keep a remembered corner on-screen after a
+          // window resize or a device rotation; the drag itself clamps tighter.
+          return {
+            left: Math.max(8, Math.min(Number(parsed.left), Math.max(8, vw - 96))),
+            top: Math.max(8, Math.min(Number(parsed.top), Math.max(8, vh - 48))),
+          }
+        } catch (_e) { return null }
+      }
+      const saveFloatPos = (value: { left: number; top: number }): void => {
+        try { (globalThis as any).localStorage?.setItem(FLOAT_POS_KEY, JSON.stringify(value)) } catch (_e) { /* storage unavailable */ }
+      }
       function FloatCard(props: any) {
         const [st, setSt] = useState<any>(null)
         const viewportWidth = Number((globalThis as any).innerWidth ?? 1200)
+        const viewportHeight = Number((globalThis as any).innerHeight ?? 800)
         const [open, setOpen] = useState<boolean>(viewportWidth >= 720)
+        // The collapsed pill remembers where the user dragged it. `null` keeps
+        // the legacy bottom-right anchor until the first drag.
+        const [pos, setPos] = useState<any>(readFloatPos())
+        const cardRef = useRef<any>(null)
+        const dragRef = useRef<any>(null)
+        const suppressOpenRef = useRef(false)
         const [busy, setBusy] = useState<string | null>(null)
         const [msg, setMsg] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null)
         const alive = useRef(true)
@@ -1345,6 +1372,86 @@
           const timer = setTimeout(() => { if (alive.current) setMsg(null) }, 2_600)
           return () => clearTimeout(timer)
         }, [msg])
+        // A click anywhere outside the open card collapses it back to the pill.
+        // Capture phase is deliberate: it closes even when the outside target
+        // stops propagation, and the short guard below prevents that same
+        // pointer-up/click from immediately re-opening the freshly placed pill.
+        useEffect(() => {
+          if (!open) return
+          let resetTimer: any
+          const doc = (globalThis as any).document
+          const onOutside = (event: any) => {
+            const el = cardRef.current
+            const target = event.target as any
+            if (el && target && (el === target || (typeof el.contains === 'function' && el.contains(target)))) return
+            suppressOpenRef.current = true
+            setOpen(false)
+            if (resetTimer) clearTimeout(resetTimer)
+            resetTimer = setTimeout(() => { suppressOpenRef.current = false }, 350)
+          }
+          doc?.addEventListener('pointerdown', onOutside, true)
+          return () => {
+            doc?.removeEventListener('pointerdown', onOutside, true)
+            if (resetTimer) clearTimeout(resetTimer)
+          }
+        }, [open])
+        const beginFloatDrag = (event: any) => {
+          if (event.button !== undefined && event.button !== 0) return
+          const el = event.currentTarget as any
+          const rect = el.getBoundingClientRect()
+          dragRef.current = {
+            pointerId: event.pointerId,
+            startX: event.clientX,
+            startY: event.clientY,
+            startLeft: rect.left,
+            startTop: rect.top,
+            width: rect.width,
+            height: rect.height,
+            moved: false,
+            lastLeft: rect.left,
+            lastTop: rect.top,
+          }
+          try { el.setPointerCapture(event.pointerId) } catch (_e) { /* older WebView */ }
+          el.style.cursor = 'grabbing'
+        }
+        const moveFloatDrag = (event: any) => {
+          const drag = dragRef.current
+          if (!drag || event.pointerId !== drag.pointerId) return
+          const dx = event.clientX - drag.startX
+          const dy = event.clientY - drag.startY
+          if (!drag.moved && Math.hypot(dx, dy) < 4) return
+          drag.moved = true
+          const vw = Number((globalThis as any).innerWidth ?? viewportWidth)
+          const vh = Number((globalThis as any).innerHeight ?? viewportHeight)
+          const left = Math.max(8, Math.min(drag.startLeft + dx, Math.max(8, vw - drag.width - 8)))
+          const top = Math.max(8, Math.min(drag.startTop + dy, Math.max(8, vh - drag.height - 8)))
+          drag.lastLeft = left
+          drag.lastTop = top
+          setPos({ left, top })
+          event.preventDefault()
+        }
+        const endFloatDrag = (event: any) => {
+          const drag = dragRef.current
+          if (!drag || event.pointerId !== drag.pointerId) return
+          try { (event.currentTarget as any).releasePointerCapture(drag.pointerId) } catch (_e) { /* ignore */ }
+          if (drag.moved) {
+            suppressOpenRef.current = true
+            saveFloatPos({ left: drag.lastLeft, top: drag.lastTop })
+            setTimeout(() => { suppressOpenRef.current = false }, 350)
+          }
+          dragRef.current = null
+          ;(event.currentTarget as any).style.cursor = 'grab'
+        }
+        const cancelFloatDrag = (event: any) => {
+          const drag = dragRef.current
+          if (!drag || event.pointerId !== drag.pointerId) return
+          dragRef.current = null
+          ;(event.currentTarget as any).style.cursor = 'grab'
+        }
+        const openCard = () => {
+          if (suppressOpenRef.current) return
+          setOpen(true)
+        }
         const cfg = st?.config ?? {}
         const accounts: any[] = cfg.accounts ?? []
         const conns: any[] = st?.connections ?? []
@@ -1445,33 +1552,54 @@
           h('div', { className: 'bar-muted', style: { fontSize: '10px' } }, label),
           h('div', { className: 'bar-muted', style: { fontSize: '10px', whiteSpace: 'normal', wordBreak: 'break-all', lineHeight: 1.3, maxHeight: '2.6em', overflow: 'hidden' }, title: model }, model))
         const box: any = {
-          position: 'fixed', right: '12px', bottom: '86px', zIndex: 2147483647, pointerEvents: 'auto',
+          position: 'fixed', zIndex: 900, pointerEvents: 'auto',
           width: open ? '308px' : 'auto', maxWidth: 'calc(100vw - 24px)', background: 'var(--dsw-alias-bg-l1, #fff)',
           border: '1px solid var(--dsw-alias-border-l1, #ddd)', borderRadius: '12px',
           boxShadow: '0 6px 24px rgba(0,0,0,.18)', padding: '10px 12px', fontSize: '12px',
           color: 'var(--dsw-alias-text-l1, #222)', boxSizing: 'border-box',
-          maxHeight: 'calc(100vh - 104px)', overflowY: 'auto',
+          overflowY: 'auto',
+        }
+        if (pos) {
+          // The card opens where the user left the pill, then clamps itself so
+          // the 308px panel never hangs off-screen. Keeping `top` bounded leaves
+          // at least 420px of card height before the body scrolls.
+          const cardLeft = Math.max(8, Math.min(pos.left, Math.max(8, viewportWidth - 316)))
+          const cardTop = Math.max(8, Math.min(pos.top, Math.max(8, viewportHeight - 420)))
+          Object.assign(box, {
+            left: `${cardLeft}px`, top: `${cardTop}px`, right: 'auto', bottom: 'auto',
+            maxHeight: `calc(100vh - ${cardTop}px - 8px)`,
+          })
+        } else {
+          Object.assign(box, { right: '12px', bottom: '86px', maxHeight: 'calc(100vh - 104px)' })
         }
         if (!open) return h('div', {
-          style: { position: 'fixed', right: '12px', bottom: '86px', zIndex: 2147483647, pointerEvents: 'auto' },
+          style: {
+            position: 'fixed', zIndex: 2147483647, pointerEvents: 'auto', touchAction: 'none', userSelect: 'none',
+            ...(pos ? { left: `${pos.left}px`, top: `${pos.top}px` } : { right: '12px', bottom: '86px' }),
+          },
         },
           h('style', null, CSS),
           h('button', {
             type: 'button',
-            'aria-label': '展开智能路由状态浮窗',
-            title: '展开智能路由状态浮窗',
+            'aria-label': '拖动移动，点击展开智能路由状态浮窗',
+            title: '拖动可移动 · 点击展开智能路由状态浮窗',
             style: {
               position: 'static', width: 'auto', maxWidth: 'calc(100vw - 24px)', background: 'var(--dsw-alias-bg-l1, #fff)',
               border: '1px solid var(--dsw-alias-border-l1, #ddd)', borderRadius: '999px',
               boxShadow: '0 4px 16px rgba(0,0,0,.16)', padding: '7px 12px', fontSize: '12px',
-              cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left', color: 'var(--dsw-alias-text-l1, #222)',
+              cursor: 'grab', fontFamily: 'inherit', textAlign: 'left', color: 'var(--dsw-alias-text-l1, #222)',
               whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', boxSizing: 'border-box',
+              touchAction: 'none',
             },
-            onClick: () => setOpen(true),
+            onPointerDown: beginFloatDrag,
+            onPointerMove: moveFloatDrag,
+            onPointerUp: endFloatDrag,
+            onPointerCancel: cancelFloatDrag,
+            onClick: openCard,
           },
             h('span', { style: { display: 'inline-block', width: 8, height: 8, borderRadius: 4, marginRight: 6, background: st ? 'var(--dsw-alias-state-success-primary, #22c55e)' : '#999' } }),
             '智能路由'))
-        return h('div', { style: box },
+        return h('div', { ref: cardRef, style: box },
           h('style', null, CSS),
           h('div', { className: 'bar-row', style: { justifyContent: 'space-between', gap: '8px' } },
             h('strong', { style: { display: 'flex', alignItems: 'center', gap: '6px' } },
